@@ -1,0 +1,20 @@
+{
+  "name": "AI Mate Soul",
+  "short_name": "Soul",
+  "description": "AI 伴侣 - 多模型情感引擎",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f8f9fc",
+  "theme_color": "#6c8cff",
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["social", "entertainment"],
+  "lang": "zh-CN"
+}

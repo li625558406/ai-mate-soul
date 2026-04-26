@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(npx kill-port:*)",
+      "Bash(netstat -ano)",
+      "Bash(xargs -I{} taskkill //PID {} //F)",
+      "Bash(node:*)",
+      "Bash(npm uninstall:*)",
+      "Bash(pip install:*)",
+      "Read(//tmp/**)",
+      "Bash(1 ls:*)",
+      "Bash(ls:*)",
+      "Bash(curl -s http://localhost:3000/api/state/test_user/reina_001)",
+      "Bash(python -m playwright install chromium)",
+      "Bash(python:*)",
+      "Bash(curl:*)",
+      "Bash(taskkill //F //FI 'WINDOWTITLE eq node*3000')",
+      "Bash(xargs -I {} taskkill //F //PID {})",
+      "WebSearch",
+      "mcp__web-search-prime__web_search_prime",
+      "Bash(python3 -c \"import sys,json; data=json.load\\(sys.stdin\\); [print\\(f''''{item[type]:10s} {item[name]}''''\\) for item in data]\")",
+      "Bash(python3 -c \"import sys,json; data=json.load\\(sys.stdin\\); [print\\(f''''{item[type]:10s} {item[name]} \\({item.get\\(size,0\\)} bytes\\)''''\\) for item in data]\")",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(''''default_branch:'''', d.get\\(''''default_branch''''\\)\\); print\\(''''size:'''', d.get\\(''''size''''\\)\\)\")",
+      "Read(//d/AI/ai-mate-soul/$TEMP/**)",
+      "Bash(python3 -c \":*)",
+      "Bash(mkdir -p reina_001 miku_002 yuki_003 lin_004)",
+      "Bash(mv reina_001.json reina_001/)",
+      "Bash(mv miku_002.json miku_002/)",
+      "Bash(mv yuki_003.json yuki_003/)",
+      "Bash(mv lin_004.json lin_004/)",
+      "Bash(sqlite3:*)"
+    ]
+  }
+}
