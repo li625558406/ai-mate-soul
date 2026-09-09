@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -722,5 +723,42 @@ export class DatabaseManager {
 
   close() {
     this.db.close();
+  }
+
+  /**
+   * 删除某角色的全部运行时数据（单事务）+ 磁盘媒体文件
+   * 涉及表：characters_state / chat_history / user_facts / diaries / daily_schedules /
+   *        future_plans / photos / anniversaries / applied_event_emotions / inner_monologue
+   * @param {string} characterId
+   * @returns {{ files: number }} 删除的媒体文件数
+   */
+  deleteCharacterData(characterId) {
+    const tables = [
+      'characters_state', 'chat_history', 'user_facts', 'diaries', 'daily_schedules',
+      'future_plans', 'photos', 'anniversaries', 'applied_event_emotions', 'inner_monologue',
+    ];
+    const del = this.db.transaction((cid) => {
+      for (const t of tables) {
+        this.db.prepare(`DELETE FROM ${t} WHERE character_id = ?`).run(cid);
+      }
+    });
+    del(characterId);
+
+    let files = 0;
+    const mediaDirs = [
+      path.resolve(process.cwd(), 'public', 'photos'),
+      path.resolve(process.cwd(), 'public', 'videos'),
+    ];
+    for (const d of mediaDirs) {
+      if (!fs.existsSync(d)) continue;
+      for (const f of fs.readdirSync(d)) {
+        // 文件名格式 <userId>_<characterId>_<timestamp>.ext
+        if (f.includes(`_${characterId}_`)) {
+          fs.rmSync(path.join(d, f), { force: true });
+          files++;
+        }
+      }
+    }
+    return { files };
   }
 }
