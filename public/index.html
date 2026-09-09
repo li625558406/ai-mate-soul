@@ -1675,6 +1675,184 @@ function closeSettings() {
   document.getElementById('settingsModal').classList.remove('open');
 }
 
+// ==================== 角色管理 ====================
+let ceState = null; // { mode:'edit'|'new', id, profile, avatarFile, tab }
+
+function ceMsg(ok, text) {
+  const el = document.getElementById('ceResult');
+  el.className = 'result ' + (ok ? 'success' : 'error');
+  el.textContent = text;
+}
+
+async function openCharMgr() {
+  closeSettings();
+  document.getElementById('charMgrModal').classList.add('open');
+  await renderCharMgrList();
+}
+function closeCharMgr() { document.getElementById('charMgrModal').classList.remove('open'); }
+
+async function renderCharMgrList() {
+  const res = await fetch(API + '/api/characters');
+  const { characters } = await res.json();
+  const box = document.getElementById('charMgrList');
+  box.innerHTML = '';
+  if (!characters || characters.length === 0) {
+    box.innerHTML = '<div style="font-size:12px;color:var(--text2);text-align:center;padding:16px">暂无角色，点击上方"新建角色"创建</div>';
+    return;
+  }
+  characters.forEach(c => {
+    const row = document.createElement('div');
+    row.className = 'char-card';
+    row.innerHTML = `
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="width:40px;height:40px;border-radius:50%;overflow:hidden;background:var(--grad);flex-shrink:0;color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px"><img src="/api/characters/${c.id}/reference" alt=""></div>
+        <div style="flex:1;min-width:0">
+          <div class="cname">${escapeHtml(c.full_name)} <span style="font-size:12px;color:var(--text2);font-weight:400">${escapeHtml(c.gender || '')} ${c.age || '?'}岁</span></div>
+          <div class="cdesc">${escapeHtml(c.nickname || '')} · 动态知识 ${c.dynamicKnowledgeCount || 0} 条</div>
+        </div>
+        <button class="btn-cancel" style="padding:4px 10px;font-size:11px">编辑</button>
+      </div>`;
+    // 头像加载失败回退首字符（DOM 绑定，与主页头像同模式）
+    const img = row.querySelector('img');
+    img.onerror = function() { const p = this.parentNode; this.remove(); if (p) p.textContent = (c.full_name || '?')[0]; };
+    row.querySelector('button').onclick = () => openCharEditor(c.id);
+    box.appendChild(row);
+  });
+}
+
+function closeCharEditor() { document.getElementById('charEditorModal').classList.remove('open'); }
+
+async function openCharEditor(id) {
+  const res = await fetch(API + '/api/characters/' + id);
+  if (!res.ok) { alert('加载角色档案失败'); return; }
+  const profile = await res.json();
+  ceState = { mode: 'edit', id, profile, avatarFile: null, tab: 'form' };
+  document.getElementById('ceTitle').textContent = '编辑角色 · ' + profile.full_name;
+  document.getElementById('ceNewBar').style.display = 'none';
+  document.getElementById('ceDanger').style.display = 'block';
+  document.getElementById('ceAvatarImg').src = '/api/characters/' + id + '/reference?t=' + Date.now();
+  fillCeForm(profile);
+  document.getElementById('ceJson').value = JSON.stringify(profile, null, 2);
+  document.getElementById('ceResult').className = 'result';
+  setCeTab('form');
+  closeCharMgr();
+  document.getElementById('charEditorModal').classList.add('open');
+}
+
+async function openCharEditorNew() {
+  const res = await fetch(API + '/api/characters');
+  const { characters } = await res.json();
+  const sel = document.getElementById('ceCopyFrom');
+  sel.innerHTML = '<option value="">不复制，从空白开始</option>' +
+    characters.map(c => `<option value="${c.id}">${escapeHtml(c.full_name)}</option>`).join('');
+  ceState = { mode: 'new', id: null, profile: { gender: '女', hobbies: [], minefields: [] }, avatarFile: null, tab: 'form' };
+  document.getElementById('ceTitle').textContent = '新建角色';
+  document.getElementById('ceNewBar').style.display = 'block';
+  document.getElementById('ceDanger').style.display = 'none';
+  document.getElementById('ceAvatarImg').removeAttribute('src');
+  fillCeForm(ceState.profile);
+  document.getElementById('ceJson').value = JSON.stringify(ceState.profile, null, 2);
+  document.getElementById('ceResult').className = 'result';
+  setCeTab('form');
+  closeCharMgr();
+  document.getElementById('charEditorModal').classList.add('open');
+}
+
+function fillCeForm(p) {
+  document.getElementById('ceName').value = p.full_name || '';
+  document.getElementById('ceNickname').value = p.nickname || '';
+  document.getElementById('ceGender').value = p.gender || '女';
+  document.getElementById('ceBirthday').value = p.birthday || '';
+  document.getElementById('ceAge').value = p.age || '';
+  document.getElementById('ceArchetype').value = p.archetype || '';
+  document.getElementById('ceEducation').value = p.education || '';
+  document.getElementById('cePersonality').value = p.base_personality || '';
+  document.getElementById('ceBackground').value = p.background || '';
+  document.getElementById('ceSpeaking').value = p.speaking_style || '';
+  document.getElementById('ceVoice').value = p.voice_preset || '';
+  document.getElementById('ceHobbies').value = (p.hobbies || []).join('\n');
+  const mf = document.getElementById('ceMinefields');
+  mf.innerHTML = '';
+  (p.minefields || []).forEach(m => addCeMineRow(m.trigger || '', m.annoyance ?? 10, m.description || ''));
+}
+
+// 收集表单值，合并进 ceState.profile 并返回（不改 id）
+function gatherCeProfile() {
+  const p = ceState.profile;
+  p.full_name = document.getElementById('ceName').value.trim();
+  p.nickname = document.getElementById('ceNickname').value.trim();
+  p.gender = document.getElementById('ceGender').value;
+  p.birthday = document.getElementById('ceBirthday').value.trim();
+  p.age = parseInt(document.getElementById('ceAge').value, 10) || 0;
+  p.archetype = document.getElementById('ceArchetype').value.trim();
+  p.education = document.getElementById('ceEducation').value.trim();
+  p.base_personality = document.getElementById('cePersonality').value.trim();
+  p.background = document.getElementById('ceBackground').value.trim();
+  p.speaking_style = document.getElementById('ceSpeaking').value.trim();
+  p.voice_preset = document.getElementById('ceVoice').value.trim();
+  p.hobbies = document.getElementById('ceHobbies').value.split('\n').map(s => s.trim()).filter(Boolean);
+  p.minefields = [...document.querySelectorAll('#ceMinefields .ce-mine-row')].map(row => {
+    const inputs = row.querySelectorAll('input');
+    return {
+      trigger: inputs[0].value.trim(),
+      annoyance: parseFloat(inputs[1].value) || 0,
+      description: inputs[2].value.trim(),
+    };
+  }).filter(m => m.trigger);
+  return p;
+}
+
+function addCeMineRow(trigger, annoyance, description) {
+  const row = document.createElement('div');
+  row.className = 'ce-mine-row';
+  row.style.cssText = 'display:flex;gap:6px;margin-bottom:6px';
+  row.innerHTML = `
+    <input type="text" placeholder="触发词(正则)" style="flex:2" autocomplete="off">
+    <input type="number" placeholder="烦闷值" style="width:80px">
+    <input type="text" placeholder="说明" style="flex:2" autocomplete="off">
+    <button class="btn-cancel" style="padding:4px 8px" title="删除此行">&#10005;</button>`;
+  const inputs = row.querySelectorAll('input');
+  inputs[0].value = trigger; inputs[1].value = annoyance; inputs[2].value = description;
+  row.querySelector('button').onclick = () => row.remove();
+  document.getElementById('ceMinefields').appendChild(row);
+}
+
+// 页签切换（内部版本 setCeTab 不带确认）
+function setCeTab(tab) {
+  document.getElementById('ceFormPane').style.display = tab === 'form' ? 'block' : 'none';
+  document.getElementById('ceJsonPane').style.display = tab === 'json' ? 'block' : 'none';
+  document.getElementById('ceTabFormBtn').style.borderColor = tab === 'form' ? 'var(--accent)' : '';
+  document.getElementById('ceTabJsonBtn').style.borderColor = tab === 'json' ? 'var(--accent)' : '';
+  ceState.tab = tab;
+}
+
+function switchCeTab(tab) {
+  if (tab === 'json') {
+    // 表单值先合并进 profile 再序列化，避免表单未保存的修改丢失
+    ceState.profile = gatherCeProfile();
+    document.getElementById('ceJson').value = JSON.stringify(ceState.profile, null, 2);
+    setCeTab('json');
+    return;
+  }
+  // 切回表单：JSON 若有未保存修改需确认放弃
+  let dirty = false;
+  try {
+    dirty = JSON.stringify(JSON.parse(document.getElementById('ceJson').value)) !== JSON.stringify(ceState.profile);
+  } catch { dirty = true; }
+  if (dirty && !confirm('高级 JSON 中的修改未保存，切回表单将丢失这些修改，继续？')) return;
+  setCeTab('form');
+}
+
+function ceAvatarSelected(input) {
+  const f = input.files && input.files[0];
+  if (!f) return;
+  if (f.size > 5 * 1024 * 1024) { ceMsg(false, '图片不能超过 5MB'); input.value = ''; return; }
+  ceState.avatarFile = f;
+  const reader = new FileReader();
+  reader.onload = e => { document.getElementById('ceAvatarImg').src = e.target.result; };
+  reader.readAsDataURL(f);
+}
+
 async function saveSettings() {
   const btn = document.getElementById('saveSettingsBtn');
   const resultEl = document.getElementById('settingsResult');
