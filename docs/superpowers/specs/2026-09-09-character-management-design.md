@@ -33,7 +33,7 @@
 - `createCharacter(profile, { copyFrom })`：校验 id（`^[a-z0-9_]{2,32}$`，不与现有重复）；copyFrom 时深拷贝源档案并覆盖 id；建子目录写 `<id>.json`；临时文件 + rename 防半写损坏
 - `saveProfile(characterId, { patch, full })`：`full:true` 整份 JSON 校验后覆盖（高级编辑）；否则浅合并核心字段（表单）；写回文件 + 内存 Map 同步
 - `deleteCharacter(characterId)`：删角色子目录（JSON + 图片）
-- `getRawProfile(characterId)`：返回完整原始档案（现有 `listCharacters` 为裁剪视图，编辑需要全量）
+- 编辑所需的完整原始档案复用现有 `GET /api/characters/:characterId`（`getCharacterProfile` 已返回全量），不另设 getRawProfile
 
 ### 2. 数据清理
 
