@@ -729,6 +729,7 @@ export class DatabaseManager {
    * 删除某角色的全部运行时数据（单事务）+ 磁盘媒体文件
    * 涉及表：characters_state / chat_history / user_facts / diaries / daily_schedules /
    *        future_plans / photos / anniversaries / applied_event_emotions / inner_monologue
+   * 媒体文件改为删行前查 photos 表拿精确文件清单，不再按文件名子串反推（避免误删 id 含目标 id 子串的其他角色文件）
    * @param {string} characterId
    * @returns {{ files: number }} 删除的媒体文件数
    */
@@ -737,6 +738,8 @@ export class DatabaseManager {
       'characters_state', 'chat_history', 'user_facts', 'diaries', 'daily_schedules',
       'future_plans', 'photos', 'anniversaries', 'applied_event_emotions', 'inner_monologue',
     ];
+    // 删行前先取精确媒体文件清单（photos 表同时登记照片与视频），避免按文件名子串反推误删
+    const mediaRows = this.db.prepare('SELECT filename FROM photos WHERE character_id = ?').all(characterId);
     const del = this.db.transaction((cid) => {
       for (const t of tables) {
         this.db.prepare(`DELETE FROM ${t} WHERE character_id = ?`).run(cid);
@@ -749,12 +752,13 @@ export class DatabaseManager {
       path.resolve(process.cwd(), 'public', 'photos'),
       path.resolve(process.cwd(), 'public', 'videos'),
     ];
-    for (const d of mediaDirs) {
-      if (!fs.existsSync(d)) continue;
-      for (const f of fs.readdirSync(d)) {
-        // 文件名格式 <userId>_<characterId>_<timestamp>.ext
-        if (f.includes(`_${characterId}_`)) {
-          fs.rmSync(path.join(d, f), { force: true });
+    for (const row of mediaRows) {
+      const filename = path.basename(String(row.filename || '')); // basename 防路径拼接意外
+      if (!filename) continue;
+      for (const d of mediaDirs) {
+        const p = path.join(d, filename);
+        if (fs.existsSync(p)) {
+          fs.rmSync(p, { force: true });
           files++;
         }
       }

@@ -139,6 +139,13 @@ export class CharacterManager {
     }
   }
 
+  /** id 合法性：小写字母/数字/下划线，2-32 位；下划线不能连续或出现在首尾（避免与记忆文件名 `__` 分隔符、媒体文件名 `_` 分隔符产生歧义） */
+  _isValidId(id) {
+    return typeof id === 'string'
+      && id.length >= 2 && id.length <= 32
+      && /^[a-z0-9]+(?:_[a-z0-9]+)*$/.test(id);
+  }
+
   /** 原子写角色 JSON（临时文件 + rename，防崩溃半写） */
   _writeProfileFile(characterId, profile) {
     const dir = path.join(CHARACTERS_DIR, characterId);
@@ -190,7 +197,7 @@ export class CharacterManager {
    */
   createCharacter(profile, { copyFrom } = {}) {
     const id = profile?.id;
-    if (!id || typeof id !== 'string' || !/^[a-z0-9_]{2,32}$/.test(id)) {
+    if (!this._isValidId(id)) {
       return { ok: false, error: '角色 id 非法：仅允许小写字母/数字/下划线，2-32 位' };
     }
     if (this._characters.has(id)) {
@@ -235,7 +242,10 @@ export class CharacterManager {
         return { ok: false, error: '不允许修改角色 id' };
       }
       next = JSON.parse(JSON.stringify(current));
-      Object.assign(next, patch);
+      for (const k of Object.keys(patch)) {
+        if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+        next[k] = patch[k];
+      }
       next.id = characterId; // 防御：无论 patch 带什么，id 不可变
     }
     if (!next.full_name) return { ok: false, error: 'full_name（角色全名）不能为空' };
@@ -244,19 +254,23 @@ export class CharacterManager {
     return { ok: true, profile: next };
   }
 
-  /** 更换角色参考图：删除目录内旧图，写入新图 */
+  /** 更换角色参考图：先写临时文件成功后再删旧图，失败不丢原图 */
   saveAvatar(characterId, buffer, ext) {
+    if (!this._isValidId(characterId)) return { ok: false, error: '角色 id 非法' };
     const dir = path.join(CHARACTERS_DIR, characterId);
     if (!fs.existsSync(dir)) return { ok: false, error: '角色目录不存在' };
+    const tmpPath = path.join(dir, `avatar.${ext}.tmp`);
+    fs.writeFileSync(tmpPath, buffer);
     for (const f of fs.readdirSync(dir)) {
       if (/\.(jpe?g|png|webp|bmp)$/i.test(f)) fs.rmSync(path.join(dir, f), { force: true });
     }
-    fs.writeFileSync(path.join(dir, `avatar.${ext}`), buffer);
+    fs.renameSync(tmpPath, path.join(dir, `avatar.${ext}`));
     return { ok: true };
   }
 
   /** 彻底删除角色目录（JSON + 图片）并从内存移除 */
   deleteCharacter(characterId) {
+    if (!this._isValidId(characterId)) return { ok: false, error: '角色 id 非法' };
     const dir = path.join(CHARACTERS_DIR, characterId);
     if (!fs.existsSync(dir)) return { ok: false, error: '角色目录不存在' };
     fs.rmSync(dir, { recursive: true, force: true });
