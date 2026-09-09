@@ -74,7 +74,10 @@ body { font-family:'Segoe UI', system-ui, -apple-system, sans-serif; background:
 
 /* ===== 聊天页 #chatPane ===== */
 #chatPane { width:100%; flex:1; min-width:0; display:flex; flex-direction:column; background:var(--bg); }
-#cfgBanner { display:none; padding:8px 16px; font-size:12px; background:rgba(255,170,60,.12); color:#ffb43c; align-items:center; gap:10px; border-bottom:1px solid rgba(255,170,60,.25); flex-shrink:0; }
+#cfgBanner, #cfgBannerHome { display:none; padding:8px 16px; font-size:12px; background:rgba(255,170,60,.12); color:#ffb43c; align-items:center; gap:10px; flex-shrink:0; }
+#cfgBanner { border-bottom:1px solid rgba(255,170,60,.25); }
+/* 主页横幅：主页有 padding+gap，做成圆角卡片与 hero-card 风格一致 */
+#cfgBannerHome { border:1px solid rgba(255,170,60,.25); border-radius:12px; }
 .chat-header { padding:12px 16px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:10px; background:var(--surface); flex-shrink:0; }
 .chat-header .avatar { width:36px; height:36px; border-radius:50%; background:var(--grad); display:flex; align-items:center; justify-content:center; font-size:16px; color:#fff; overflow:hidden; flex-shrink:0; }
 .chat-header .avatar img { width:100%; height:100%; object-fit:cover; border-radius:50%; }
@@ -228,6 +231,10 @@ body.view-chat #homePane { display:none; }
 <div id="app">
   <!-- ===== 主页（手机全屏 / 桌面左栏） ===== -->
   <aside id="homePane">
+    <div id="cfgBannerHome">
+      <span style="flex:1">&#9888; 对话 API 未配置，聊天功能不可用</span>
+      <button class="btn-cancel" style="padding:5px 14px" onclick="openSettings()">去配置</button>
+    </div>
     <div class="hero-card" id="heroCard">
       <div class="hero-avatar" id="heroAvatar">?</div>
       <div class="hero-name" id="heroName">未选择角色</div>
@@ -255,7 +262,7 @@ body.view-chat #homePane { display:none; }
     <div class="feature-grid">
       <button class="feat-btn" onclick="openDiary()"><span class="feat-icon">&#128221;</span>秘密日记</button>
       <button class="feat-btn" onclick="openAnniv()"><span class="feat-icon">&#128197;</span>纪念日</button>
-      <button class="feat-btn" id="videoFeatBtn" onclick="generateVideo()" disabled><span class="feat-icon">&#127916;</span>生成视频</button>
+      <button class="feat-btn" id="videoFeatBtn" onclick="generateVideo()" disabled><span class="feat-icon">&#127916;</span><span class="feat-desc">AI 拍短视频</span></button>
     </div>
 
     <div class="facts-card">
@@ -550,7 +557,6 @@ function selectCharacter(c, el, opts = {}) {
   document.getElementById('sendBtn').disabled = false;
   document.getElementById('videoFeatBtn').disabled = false;
   document.getElementById('callBtn').disabled = false;
-  document.getElementById('msgInput').focus();
 
   // 关闭日记和纪念日面板
   closeDiary();
@@ -568,7 +574,11 @@ function selectCharacter(c, el, opts = {}) {
   refreshState();
   loadChatHistory(uid, c.id);
   closeModal('charModal');
-  if (!opts.autoSelect && document.body.classList.contains('view-home') && window.innerWidth < 900) openChatView();
+  // 手机端主页点角色跳转聊天页：focus 必须在视图切换（chatPane 可见）之后，否则静默失败
+  if (!opts.autoSelect && document.body.classList.contains('view-home') && window.innerWidth < 900) {
+    openChatView();
+    document.getElementById('msgInput').focus();
+  }
 }
 
 async function loadChatHistory(uid, characterId) {
@@ -1524,7 +1534,9 @@ function applyCfgStatus(s) {
   const ttsOk = configured(s.tts?.apiKey);
   const videoOk = configured(s.video?.apiKey);
 
+  // 主页与聊天页两个横幅同步显隐（手机端 view-home 时聊天页横幅被隐藏，需主页横幅兜底）
   document.getElementById('cfgBanner').style.display = chatOk ? 'none' : 'flex';
+  document.getElementById('cfgBannerHome').style.display = chatOk ? 'none' : 'flex';
 
   const badge = (el, ok) => {
     const target = document.getElementById(el);
