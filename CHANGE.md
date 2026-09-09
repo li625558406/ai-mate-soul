@@ -109,3 +109,4 @@
 - 角色编辑写操作均无鉴权（局域网任意客户端可增删角色），当前单机自用可接受，公网部署前需加认证层。
 - 6MB 超限头像上传返回 500（multer LIMIT_FILE_SIZE 未映射为 413），非 2xx 拦截有效，体验可优化。
 - `public/photos/` 下 lin_004 的 3 张 git 跟踪测试照片已随授权 reset 清除（git status 显示 D），如需保留历史可 `git checkout` 恢复。
+4. **最终整体审查收尾**：终审发现提交树不自洽（f92424f 混入视频接线但 VideoService.js 等在制品未提交，fresh clone 无法启动），已按用户确认补交（`feat(video)` 一笔）；3 张 git 跟踪的历史测试照片以 `chore` 提交删除。功能判定为可交付。
