@@ -212,9 +212,14 @@ app.post('/api/characters', (req, res) => {
   if (!profile || typeof profile !== 'object' || Array.isArray(profile)) {
     return res.status(400).json({ error: 'profile 必须为对象' });
   }
-  const result = characterManager.createCharacter(profile, { copyFrom });
-  if (!result.ok) return res.status(400).json({ error: result.error });
-  res.json({ success: true, id: result.profile.id });
+  try {
+    const result = characterManager.createCharacter(profile, { copyFrom });
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json({ success: true, id: result.profile.id });
+  } catch (err) {
+    console.warn('[CharMgr] 创建角色失败:', err.message);
+    res.status(500).json({ error: '创建失败: ' + err.message });
+  }
 });
 
 // 保存编辑（patch 浅合并 / full 整份覆盖）
@@ -223,9 +228,14 @@ app.put('/api/characters/:characterId', (req, res) => {
   if (patch === undefined && full === undefined) {
     return res.status(400).json({ error: '缺少 patch 或 full' });
   }
-  const result = characterManager.saveProfile(req.params.characterId, { patch, full });
-  if (!result.ok) return res.status(400).json({ error: result.error });
-  res.json({ success: true });
+  try {
+    const result = characterManager.saveProfile(req.params.characterId, { patch, full });
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json({ success: true });
+  } catch (err) {
+    console.warn('[CharMgr] 保存失败:', err.message);
+    res.status(500).json({ error: '保存失败: ' + err.message });
+  }
 });
 
 // 更换角色参考图（魔数校验类型：jpg/png/webp）
@@ -269,14 +279,15 @@ app.delete('/api/characters/:characterId', (req, res) => {
   const { characterId } = req.params;
   const c = characterManager.getCharacterProfile(characterId);
   if (!c) return res.status(404).json({ error: '角色不存在' });
-  if (req.query.confirm !== c.full_name) {
+  if (typeof req.query.confirm !== 'string' || req.query.confirm.length === 0 || req.query.confirm !== c.full_name) {
     return res.status(400).json({ error: '确认名与角色全名不匹配，未执行删除' });
   }
   try {
-    const result = characterManager.deleteCharacter(characterId);
-    if (!result.ok) return res.status(400).json({ error: result.error });
+    // 可逆清理在前（失败可重试），删目录不可逆操作放最后
     db.deleteCharacterData(characterId);
     memoryService.removeCharacter(characterId);
+    const result = characterManager.deleteCharacter(characterId);
+    if (!result.ok) return res.status(400).json({ error: result.error });
     console.log(`[CharMgr] 已彻底删除角色: ${characterId}`);
     res.json({ success: true });
   } catch (err) {
