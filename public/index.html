@@ -7,7 +7,7 @@
 
 <!-- PWA -->
 <link rel="manifest" href="/manifest.json">
-<meta name="theme-color" content="#6c8cff">
+<meta name="theme-color" content="#ff6a88">
 
 <!-- iOS PWA -->
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -222,16 +222,15 @@ body.view-chat #homePane { display:none; }
     </div>
 
     <div class="stats-overview" id="statsOverview">
-      <!-- Task 2 将重构此区；先保留旧状态元素（隐藏）避免旧 JS 报错 -->
-      <div style="display:none">
-        <div id="stAffection">--</div><div id="stMood">--</div><div id="stStage">--</div>
-        <div id="stChats">--</div><div id="stDays">--</div><div id="stLifeStage">--</div>
-        <div id="stLevel">--</div><div id="stEmotion">--</div>
-      </div>
       <div class="stat-row"><span class="stat-lbl">好感度</span><div class="bar"><div id="affBar" style="width:0%"></div></div><b id="affVal">--</b></div>
       <div class="stat-row"><span class="stat-lbl">心情</span><div class="bar mood"><div class="mood-center"></div><div id="moodBar" style="left:50%;width:0%;background:var(--text2)"></div></div></div>
       <div class="stat-row"><span class="stat-lbl">经验</span><div class="bar"><div id="xpBar" style="width:0%;background:var(--accent)"></div></div><b id="xpVal">--</b></div>
-      <div id="metaInfo" style="display:none"></div>
+      <div class="stat-grid">
+        <div class="stat-cell"><b id="stStage">--</b><span>关系阶段</span></div>
+        <div class="stat-cell"><b id="stLifeStage">--</b><span>人生阶段</span></div>
+        <div class="stat-cell"><b id="stDays">--</b><span>互动天数</span></div>
+        <div class="stat-cell"><b id="stChats">--</b><span>对话次数</span></div>
+      </div>
     </div>
 
     <button class="btn-grad" id="startChatBtn" onclick="openChatView()">💬 开始聊天</button>
@@ -448,6 +447,10 @@ async function loadCharacters() {
   const { characters } = await res.json();
   const list = document.getElementById('characterList');
   list.innerHTML = '';
+  if (characters.length === 0) {
+    list.innerHTML = '<div style="font-size:13px;color:var(--text2);padding:12px;text-align:center">还没有角色<br><span style="font-size:11px">请在 data/characters/ 目录添加角色档案后重启</span></div>';
+    return;
+  }
   characters.forEach(c => {
     const div = document.createElement('div');
     div.className = 'char-card';
@@ -489,6 +492,10 @@ function selectCharacter(c, el, opts = {}) {
   const genderMap = { '女': '♀', '男': '♂' };
   const genderIcon = genderMap[c.gender] || c.gender;
   document.getElementById('headerDesc').textContent = `${c.nickname} · ${genderIcon} · ${c.age}岁 · ${c.birthday}`;
+  // Hero 卡（主页）
+  document.getElementById('heroName').textContent = c.full_name;
+  document.getElementById('heroSub').textContent = `${c.nickname} · ${genderIcon} · ${c.age}岁 · ${c.birthday}`;
+  document.getElementById('heroAvatar').innerHTML = `<img src="${refUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:50%" onerror="this.remove();document.getElementById('heroAvatar').textContent='${c.full_name[0]}'">`;
   document.getElementById('msgInput').disabled = false;
   document.getElementById('sendBtn').disabled = false;
   document.getElementById('videoFeatBtn').disabled = false;
@@ -588,56 +595,54 @@ async function refreshState() {
   try {
     const res = await fetch(API + `/api/state/${uid}/${targetCharId}`);
     const s = await res.json();
-
-    // 防止切换角色后旧请求覆盖新数据
-    if (targetCharId !== currentCharacterId) return;
+    if (targetCharId !== currentCharacterId) return; // 防止切换角色后旧请求覆盖
 
     if (s.userName) document.getElementById('userName').value = s.userName;
-    document.getElementById('stAffection').textContent = Number(s.affection).toFixed(1);
-    const moodEl = document.getElementById('stMood');
-    moodEl.textContent = s.moodDescription;
-    moodEl.className = 'val mood-' + s.mood;
-    document.getElementById('stStage').textContent = s.personalityStage || '--';
-    document.getElementById('stChats').textContent = s.chatCount;
-    document.getElementById('stDays').textContent = s.interactionDays;
-    const lifeStageEl = document.getElementById('stLifeStage');
-    lifeStageEl.innerHTML = s.lifeStage ? `<span class="life-stage-badge">${s.lifeStage}</span>` : '--';
 
-    const lvl = s.level || 1; const xp = s.experience || 0;
-    const curT = XP_THRESHOLDS[lvl - 1] || 0; const nextT = XP_THRESHOLDS[lvl] || curT + 1000;
-    document.getElementById('stLevel').textContent = `Lv.${lvl} / ${xp}xp`;
-    document.getElementById('xpBar').style.width = Math.min(100, ((xp - curT) / (nextT - curT)) * 100) + '%';
-
-    // Mood state
+    // Hero 卡
+    const moodLabels = { joyful:'开心', happy:'愉悦', calm:'平静', uneasy:'不悦', angry:'愤怒', cold_war:'冷战' };
+    const badge = document.getElementById('heroMoodBadge');
     const moodLevel = s.moodLevel ?? 0;
-    const moodLabels = { joyful: '开心', happy: '愉悦', calm: '平静', uneasy: '不悦', angry: '愤怒', cold_war: '冷战' };
-    const emotionLabel = moodLabels[s.emotionState] || s.emotionState || '平静';
-    document.getElementById('stEmotion').textContent = `${emotionLabel} / ${Math.round(moodLevel)}`;
-    document.getElementById('stEmotion').style.color = moodLevel >= 20 ? 'var(--green)' : moodLevel <= -20 ? 'var(--red)' : 'var(--text)';
+    const moodCls = moodLevel >= 20 ? 'positive' : moodLevel <= -20 ? (s.emotionState === 'cold_war' ? 'negative cold_war' : 'negative') : '';
+    badge.style.display = 'inline-flex';
+    badge.className = 'mood-badge ' + moodCls;
+    badge.textContent = `${moodLabels[s.emotionState] || s.emotionState || '平静'} ${moodLevel >= 0 ? '+' : ''}${Math.round(moodLevel)}`;
+    const weatherEl = document.getElementById('heroWeather');
+    if (s.weatherMood) { weatherEl.style.display = 'inline-flex'; weatherEl.textContent = '☁ ' + s.weatherMood; }
+    else weatherEl.style.display = 'none';
 
-    // Mood bar (bidirectional: center=0, left=negative/red, right=positive/green)
-    const moodBar = document.getElementById('moodBar');
+    // 好感度
+    const aff = Number(s.affection);
+    document.getElementById('affVal').textContent = aff.toFixed(1);
+    const affBar = document.getElementById('affBar');
+    affBar.style.width = Math.max(0, Math.min(100, aff)) + '%';
+    affBar.style.background = aff <= 20 ? 'var(--red)' : aff <= 60 ? 'var(--yellow)' : 'var(--green)';
+
+    // 心情双向条（-100 ~ +100，中点为 0）
     const clamped = Math.max(-100, Math.min(100, moodLevel));
-    const pct = (clamped + 100) / 2; // -100→0%, 0→50%, +100→100%
-
+    const pct = (clamped + 100) / 2;
+    const moodBar = document.getElementById('moodBar');
     if (clamped >= 0) {
-      moodBar.style.left = '50%';
-      moodBar.style.width = (pct - 50) + '%';
-      moodBar.style.borderRadius = '0 3px 3px 0';
-      moodBar.style.background = clamped >= 50 ? 'var(--green)' : clamped >= 20 ? '#6bc77a' : 'var(--text3)';
+      moodBar.style.left = '50%'; moodBar.style.width = (pct - 50) + '%';
+      moodBar.style.background = clamped >= 50 ? 'var(--green)' : clamped >= 20 ? '#6bc77a' : 'var(--text2)';
     } else {
-      moodBar.style.left = pct + '%';
-      moodBar.style.width = (50 - pct) + '%';
-      moodBar.style.borderRadius = '3px 0 0 3px';
-      moodBar.style.background = clamped <= -80 ? 'var(--red)' : clamped <= -50 ? '#e07050' : clamped <= -20 ? 'var(--orange)' : 'var(--text3)';
+      moodBar.style.left = pct + '%'; moodBar.style.width = (50 - pct) + '%';
+      moodBar.style.background = clamped <= -80 ? 'var(--red)' : clamped <= -50 ? '#e07050' : clamped <= -20 ? 'var(--orange)' : 'var(--text2)';
     }
 
-    // Bars
-    const bar = document.getElementById('affBar');
-    bar.style.width = s.affection + '%';
-    bar.style.background = s.affection <= 20 ? 'var(--red)' : s.affection <= 60 ? 'var(--yellow)' : 'var(--green)';
+    // 等级经验
+    const lvl = s.level || 1; const xp = s.experience || 0;
+    const curT = XP_THRESHOLDS[lvl - 1] || 0; const nextT = XP_THRESHOLDS[lvl] || curT + 1000;
+    document.getElementById('xpVal').textContent = `Lv.${lvl}`;
+    document.getElementById('xpBar').style.width = Math.min(100, ((xp - curT) / (nextT - curT)) * 100) + '%';
 
-    // Facts
+    // 互动数据
+    document.getElementById('stStage').textContent = s.personalityStage || '--';
+    document.getElementById('stDays').textContent = s.interactionDays ?? '--';
+    document.getElementById('stChats').textContent = s.chatCount ?? '--';
+    document.getElementById('stLifeStage').textContent = s.lifeStage || '--';
+
+    // facts
     const factsDiv = document.getElementById('factsList');
     if (s.facts && s.facts.length > 0) {
       factsDiv.innerHTML = s.facts.map(f => `<span class="fact-tag"><b>${escapeHtml(f.fact_key)}</b>: ${escapeHtml(f.fact_value)}</span>`).join('');
@@ -645,36 +650,17 @@ async function refreshState() {
       factsDiv.innerHTML = '<span style="font-size:11px;color:var(--text2)">暂无</span>';
     }
 
-    // Status badge
-    const badge = document.getElementById('statusBadge');
-    if (s.emotionState && s.emotionState !== 'calm' && s.emotionState !== 'comfortable') {
-      badge.style.display = 'inline-block';
-      badge.className = `status-badge status-${s.emotionState}`;
-      badge.textContent = moodLabels[s.emotionState] || s.emotionState;
-      if (s.emotionState === 'cold_war') badge.textContent += ` (${s.coldWarRemaining}min)`;
-      // Also show happy states
-    } else if (s.emotionState === 'joyful' || s.emotionState === 'happy') {
-      badge.style.display = 'inline-block';
-      badge.className = `status-badge status-${s.emotionState}`;
-      badge.textContent = moodLabels[s.emotionState] || s.emotionState;
-    } else {
-      badge.style.display = 'none';
-    }
+    // 聊天头部状态徽章
+    const sb = document.getElementById('statusBadge');
+    if (s.emotionState && !['calm', 'comfortable'].includes(s.emotionState)) {
+      sb.style.display = 'inline-block';
+      sb.className = `status-badge status-${s.emotionState}`;
+      sb.textContent = moodLabels[s.emotionState] || s.emotionState;
+      if (s.emotionState === 'cold_war') sb.textContent += ` (${s.coldWarRemaining}min)`;
+    } else sb.style.display = 'none';
 
-    // Cold war hint
-    const hint = document.getElementById('coldWarHint');
-    hint.classList.toggle('show', s.coldWarRemaining > 0);
-
-    // Busy countdown bar
+    document.getElementById('coldWarHint').classList.toggle('show', s.coldWarRemaining > 0);
     updateBusyBar(s.busyActivity, s.busyRemaining, s.busyUntil);
-
-    // 天气（持久显示）
-    const info = document.getElementById('metaInfo');
-    if (s.weatherMood) {
-      info.innerHTML = `<span class="info-blue">天气: ${s.weatherMood}</span>`;
-    } else {
-      info.innerHTML = '';
-    }
   } catch(e) {}
 }
 
@@ -1076,8 +1062,8 @@ async function doImport() {
 
     if (data.success) {
       resultEl.className = 'result success';
-      const metaInfo = data.meta ? `\n角色: ${data.meta.characterName} | 导出时间: ${data.meta.exportedAt?.slice(0,10)}` : '';
-      resultEl.textContent = `${data.message}${metaInfo}`;
+      const metaLine = data.meta ? `\n角色: ${data.meta.characterName} | 导出时间: ${data.meta.exportedAt?.slice(0,10)}` : '';
+      resultEl.textContent = `${data.message}${metaLine}`;
       refreshState();
     } else {
       resultEl.className = 'result error';
