@@ -12,11 +12,14 @@
 4. **入口收敛**：朗读/日记/导出重复入口删除；设置弹层新增数据管理区（导出/导入/清除记录）；User ID/名字移入「我的信息」弹层；角色选择移入「切换角色」弹层。
 5. **JS 逻辑零改动**：API 调用、Socket.IO、SSE、语音通话音频管线原样保留，仅 DOM 挂载点适配。
 6. **对抗性验证与收尾修复**（Task 5）：四处头像内联 onerror 改为 DOM 绑定（顺带修复原写法 `this.remove()` 后 `parentNode` 为 null 导致回退文字从未生效的隐藏 bug）；`generateDiary` 失败提示兼容后端 `reason` 字段；数值胶囊 `xpGained`/`emotionState` 补 `escapeHtml`；对抗性验证中新发现并修复：导入弹层被设置弹层遮挡（`#importModal` 提 z-index 210）、SSE error 事件 data 为纯字符串时前端显示 `[Error] undefined`（兼容字符串/对象两种格式）。桌面/手机双端 10 组用例验证通过。
+7. **最终整体审查修复**：新增 `#cfgBannerHome`——手机停在主页时也能看到"对话 API 未配置"横幅（原横幅在聊天页内被视图互斥隐藏）；`#videoFeatBtn` 补 `.feat-desc` span 修复视频生成"生成中..."文案失效的死引用；手机端选角后 `msgInput.focus()` 移到视图切换之后修复静默失败；`setAvatar` 增加归属校验（快速切角色时旧头像迟到的 onerror 不再污染新头像）；SSE error 解析加 try/catch 兜底（非 JSON 错误原文展示，不再误报"连接失败"）。
 
 ### 遗留事项
 - 照片相册页需新增照片列表接口，属后续迭代。
 - 手机 PWA 实机（iOS Safari / Android Chrome）需用户自行验证麦克风与 safe-area。
 - `sw.js` 对 index.html 为 cache-first（缓存名 soul-v3），前端改动后需强刷或升版本号才能在已访问过的浏览器生效，开发调试时易踩坑。
+- 视频任务轮询回调无角色归属守卫：任务生成中切换角色，视频会插入新角色聊天流（建议回调时比对 `currentCharacterId`，与视频功能后端一并处理）。
+- 三个已接受的 Minor：日记失败提示的 `reason` 机器码未映射中文、角色卡片头像未复用 `setAvatar`、胶囊 `xpGained` 为 undefined 时显示 "+undefinedxp"（均为旧版同款既有行为）。
 
 ## 2026-09-09 — 火山方舟（Ark）视频生成对接
 
