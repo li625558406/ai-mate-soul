@@ -10,7 +10,7 @@ import os from 'os';
 import { Server as SocketIOServer } from 'socket.io';
 
 import { DatabaseManager } from './database/DatabaseManager.js';
-import { LLMProvider, registerProvidersFromEnv } from './services/LLMProvider.js';
+import { LLMProvider } from './services/LLMProvider.js';
 import { EmotionEngine } from './services/EmotionEngine.js';
 import { MemoryService } from './services/MemoryService.js';
 import { FactExtractor } from './services/FactExtractor.js';
@@ -22,6 +22,7 @@ import { ProactiveService } from './services/ProactiveService.js';
 import { MultimodalService } from './services/MultimodalService.js';
 import { VoiceCallService } from './services/VoiceCallService.js';
 import { ImageService } from './services/ImageService.js';
+import { VideoService } from './services/VideoService.js';
 import { DiaryService } from './services/DiaryService.js';
 import { LifecycleService } from './services/LifecycleService.js';
 import { SecurityService } from './services/SecurityService.js';
@@ -48,8 +49,7 @@ if (settings.chat.apiKey && settings.chat.baseURL && settings.chat.model) {
 }
 
 if (llmProvider.getProviderNames().length === 0) {
-  console.error('[FATAL] 未配置对话 API，请在设置页面配置 URL + API Key + Model');
-  process.exit(1);
+  console.warn('[WARN] 对话 API 未配置，服务正常启动，请在 Web 设置页面配置 URL + API Key + Model');
 }
 
 const defaultProvider = 'default';
@@ -117,6 +117,14 @@ const imageService = new ImageService({
 proactiveService.imageService = imageService;
 chatService.imageService = imageService;
 
+const videoService = new VideoService({
+  apiKey: settings.video.apiKey,
+  baseURL: settings.video.baseURL,
+  model: settings.video.model,
+  db,
+  characterManager,
+});
+
 // ==================== Express + Socket.IO ====================
 
 const app = express();
@@ -170,6 +178,9 @@ app.use(express.static('public'));
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
+// 角色头像上传：限 5MB（文件类型由路由内魔数校验，不信任扩展名）
+const avatarUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+
 // ==================== API Routes ====================
 
 app.get('/api/characters', (_req, res) => {
@@ -191,6 +202,87 @@ app.get('/api/characters/:characterId/reference', (req, res) => {
   const imgPath = characterManager.getReferenceImagePath(req.params.characterId);
   if (!imgPath) return res.status(404).json({ error: '角色立绘不存在' });
   res.sendFile(path.resolve(imgPath));
+});
+
+// ==================== 角色管理（写操作） ====================
+
+// 新增角色（可复制现有）
+app.post('/api/characters', (req, res) => {
+  const { profile, copyFrom } = req.body || {};
+  if (!profile || typeof profile !== 'object' || Array.isArray(profile)) {
+    return res.status(400).json({ error: 'profile 必须为对象' });
+  }
+  const result = characterManager.createCharacter(profile, { copyFrom });
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  res.json({ success: true, id: result.profile.id });
+});
+
+// 保存编辑（patch 浅合并 / full 整份覆盖）
+app.put('/api/characters/:characterId', (req, res) => {
+  const { patch, full } = req.body || {};
+  if (patch === undefined && full === undefined) {
+    return res.status(400).json({ error: '缺少 patch 或 full' });
+  }
+  const result = characterManager.saveProfile(req.params.characterId, { patch, full });
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  res.json({ success: true });
+});
+
+// 更换角色参考图（魔数校验类型：jpg/png/webp）
+app.post('/api/characters/:characterId/avatar', avatarUpload.single('avatar'), (req, res) => {
+  const { characterId } = req.params;
+  if (!characterManager.hasCharacter(characterId)) return res.status(404).json({ error: '角色不存在' });
+  if (!req.file) return res.status(400).json({ error: '未收到图片文件' });
+  const buf = req.file.buffer;
+  let ext = null;
+  if (buf.length > 3 && buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) ext = 'jpg';
+  else if (buf.length > 4 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) ext = 'png';
+  else if (buf.length > 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') ext = 'webp';
+  if (!ext) return res.status(400).json({ error: '仅支持 jpg / png / webp 图片' });
+  try {
+    const result = characterManager.saveAvatar(characterId, buf, ext);
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json({ success: true });
+  } catch (err) {
+    console.warn('[CharMgr] 头像保存失败:', err.message);
+    res.status(500).json({ error: '头像保存失败: ' + err.message });
+  }
+});
+
+// 重置运行时状态（档案 JSON 不动）
+app.post('/api/characters/:characterId/reset', (req, res) => {
+  const { characterId } = req.params;
+  if (!characterManager.hasCharacter(characterId)) return res.status(404).json({ error: '角色不存在' });
+  try {
+    db.deleteCharacterData(characterId);
+    const removed = memoryService.removeCharacter(characterId);
+    console.log(`[CharMgr] 重置 ${characterId}：运行时数据已清空，删除记忆文件 ${removed} 个`);
+    res.json({ success: true });
+  } catch (err) {
+    console.warn('[CharMgr] 重置失败:', err.message);
+    res.status(500).json({ error: '重置失败: ' + err.message });
+  }
+});
+
+// 彻底删除角色（目录 + SQLite + 记忆 + 媒体文件），需 confirm=角色全名
+app.delete('/api/characters/:characterId', (req, res) => {
+  const { characterId } = req.params;
+  const c = characterManager.getCharacterProfile(characterId);
+  if (!c) return res.status(404).json({ error: '角色不存在' });
+  if (req.query.confirm !== c.full_name) {
+    return res.status(400).json({ error: '确认名与角色全名不匹配，未执行删除' });
+  }
+  try {
+    const result = characterManager.deleteCharacter(characterId);
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    db.deleteCharacterData(characterId);
+    memoryService.removeCharacter(characterId);
+    console.log(`[CharMgr] 已彻底删除角色: ${characterId}`);
+    res.json({ success: true });
+  } catch (err) {
+    console.warn('[CharMgr] 删除失败:', err.message);
+    res.status(500).json({ error: '删除失败: ' + err.message });
+  }
 });
 
 app.get('/api/state/:userId/:characterId', async (req, res) => {
@@ -325,6 +417,24 @@ app.get('/api/photos/:userId/:characterId', (req, res) => {
   const { userId, characterId } = req.params;
   const photos = db.getPhotos(userId, characterId);
   res.json({ photos });
+});
+
+// --- Video（火山方舟，异步任务制） ---
+app.post('/api/video', (req, res) => {
+  const { userId, characterId, prompt } = req.body;
+  if (!userId || !characterId) return res.status(400).json({ error: '缺少 userId 或 characterId' });
+  if (!characterManager.hasCharacter(characterId)) return res.status(404).json({ error: `角色 ${characterId} 不存在` });
+
+  try {
+    const { taskId } = videoService.createTask(userId, characterId, { prompt });
+    res.json({ success: true, taskId });
+  } catch (err) {
+    res.status(500).json({ error: `视频任务创建失败: ${err.message}` });
+  }
+});
+
+app.get('/api/video/status/:taskId', (req, res) => {
+  res.json(videoService.getTaskStatus(req.params.taskId));
 });
 
 // --- Chat History ---
@@ -521,6 +631,7 @@ app.put('/api/settings', (req, res) => {
 
   // Reload service API keys
   if (raw.image.apiKey) imageService._apiKey = raw.image.apiKey;
+  videoService.updateConfig({ apiKey: raw.video.apiKey, baseURL: raw.video.baseURL, model: raw.video.model });
   if (raw.tts.apiKey) {
     multimodalService._apiKey = raw.tts.apiKey;
     voiceCallService._apiKey = raw.tts.apiKey;
@@ -617,12 +728,13 @@ httpServer.listen(PORT, () => {
   } else {
     console.log(`  HTTPS: 未启用（手机麦克风需要 HTTPS）`);
   }
-  console.log(`  LLM: ${llmProvider.getProviderNames().join(', ')}`);
+  console.log(`  LLM: ${llmProvider.getProviderNames().join(', ') || '未配置 (请在 Web 设置页配置)'}`);
   console.log(`  角色: ${characterManager.listCharacters().map(c => c.name).join(', ')}`);
-  console.log(`  TTS: DashScope Qwen3-TTS${process.env.DASHSCOPE_API_KEY ? '' : ' (未配置API Key)'}`);
+  console.log(`  TTS: DashScope Qwen3-TTS${settingsManager.getRaw().tts.apiKey ? '' : ' (未配置API Key)'}`);
   console.log(`  Socket.IO: 已启用`);
-  console.log(`  Voice Call: DashScope Qwen-Omni-Realtime${process.env.DASHSCOPE_API_KEY ? '' : ' (未配置API Key)'}`);
-  console.log(`  Image Gen: Wanx 2.7 Image Pro${process.env.DASHSCOPE_API_KEY ? '' : ' (未配置API Key)'}`);
+  console.log(`  Voice Call: DashScope Qwen-Omni-Realtime${settingsManager.getRaw().tts.apiKey ? '' : ' (未配置API Key)'}`);
+  console.log(`  Image Gen: Wanx 2.7 Image Pro${settingsManager.getRaw().image.apiKey ? '' : ' (未配置API Key)'}`);
+  console.log(`  Video Gen: Ark Seedance${settingsManager.getRaw().video.apiKey ? '' : ' (未配置API Key)'}`);
   console.log(`  日程规划: 每日 ${SCHEDULE_CRON_HOUR}:${String(SCHEDULE_CRON_MINUTE).padStart(2, '0')}`);
   console.log(`  日记定时: 每日 ${DIARY_CRON_HOUR}:${String(DIARY_CRON_MINUTE).padStart(2, '0')}`);
   console.log(`========================================\n`);
