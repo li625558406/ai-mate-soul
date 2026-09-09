@@ -327,7 +327,10 @@ body.view-chat #homePane { display:none; }
 <div class="diary-panel" id="diaryPanel">
   <div class="panel-header">
     <h3>&#128221; 秘密日记</h3>
-    <button class="panel-close" onclick="closeDiary()">&times;</button>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="btn-cancel" style="padding:4px 12px;font-size:11px" onclick="generateDiary()">✍ 生成今日</button>
+      <button class="panel-close" onclick="closeDiary()">&times;</button>
+    </div>
   </div>
   <div class="diary-list" id="diaryList"></div>
 </div>
@@ -404,6 +407,14 @@ body.view-chat #homePane { display:none; }
     <div class="field"><label>API Key</label><input type="password" id="stVideoKey" placeholder="ark-..." autocomplete="off"></div>
     <div class="field"><label>Model</label><input type="text" id="stVideoModel" placeholder="doubao-seedance-2-0-260128" autocomplete="off"><div class="hint">留空使用默认模型</div></div>
 
+    <h4 class="section-title">&#128230; 数据管理</h4>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <button class="btn-cancel" onclick="exportSoul()">&#128230; 导出备份</button>
+      <button class="btn-cancel" onclick="openImportModal()">&#128229; 导入备份</button>
+      <button class="btn-cancel" style="color:var(--red); border-color:rgba(224,85,85,.4)" onclick="clearAllChat()">&#128465; 清除聊天记录</button>
+    </div>
+    <div class="hint" style="font-size:11px;color:var(--text2);margin-top:6px">备份导出为加密 .soul 文件，导入需提供导出时的密钥</div>
+
     <div class="btn-row">
       <button class="btn-cancel" onclick="closeSettings()">取消</button>
       <button class="btn-primary" id="saveSettingsBtn" onclick="saveSettings()">保存并生效</button>
@@ -457,13 +468,14 @@ async function loadCharacters() {
     const genderMap = { '女': '♀', '男': '♂' };
     const genderIcon = genderMap[c.gender] || c.gender;
     div.innerHTML = `<div style="display:flex;align-items:center;gap:8px">
-      <div style="width:32px;height:32px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;flex-shrink:0;overflow:hidden">
+      <div style="width:36px;height:36px;border-radius:50%;background:var(--grad);display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;flex-shrink:0;overflow:hidden">
         <img src="/api/characters/${c.id}/reference" style="width:100%;height:100%;object-fit:cover" onerror="this.remove();this.parentNode.textContent='${c.full_name[0]}'">
       </div>
       <div style="flex:1;min-width:0">
         <div class="cname">${c.full_name} <span style="font-size:12px;color:var(--text2);font-weight:400">${genderIcon} ${c.age}岁</span></div>
+        <div class="cdesc">${c.nickname || ''}</div>
       </div>
-      <button class="btn-small" onclick="event.stopPropagation();showCharDetail('${c.id}')" style="margin:0;padding:3px 8px;font-size:11px">详情</button>
+      <button class="btn-cancel" onclick="event.stopPropagation();showCharDetail('${c.id}')" style="padding:4px 10px;font-size:11px">详情</button>
     </div>`;
     div.onclick = () => selectCharacter(c, div);
     list.appendChild(div);
@@ -569,9 +581,13 @@ async function setUserName() {
   const uid = document.getElementById('userId').value;
   const name = document.getElementById('userName').value.trim();
   if (!name) return;
-  await fetch(API + `/api/user/${uid}/name`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name}) });
-  appendMsg('system', `名字已设置为「${name}」`);
-  refreshState();
+  try {
+    await fetch(API + `/api/user/${uid}/name`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name}) });
+    closeModal('profileModal');
+    refreshState();
+  } catch(e) {
+    alert('保存失败: ' + e.message);
+  }
 }
 
 function onUserIdChange() {
@@ -849,6 +865,7 @@ async function clearAllChat() {
   try {
     await fetch(API + `/api/chat-history/${uid}/${currentCharacterId}`, { method: 'DELETE' });
     clearChat();
+    closeSettings();
     lastAiReply = '';
     document.getElementById('ttsBtn').disabled = true;
   } catch(e) {}
