@@ -630,8 +630,10 @@ async function refreshState() {
       moodBar.style.background = clamped <= -80 ? 'var(--red)' : clamped <= -50 ? '#e07050' : clamped <= -20 ? 'var(--orange)' : 'var(--text2)';
     }
 
-    // 等级经验
-    const lvl = s.level || 1; const xp = s.experience || 0;
+    // 等级经验（后端 level 字段是阶段名，前端由 XP 推导数值等级）
+    const xp = s.experience || 0;
+    let lvl = 1;
+    for (let i = 0; i < XP_THRESHOLDS.length; i++) { if (xp >= XP_THRESHOLDS[i]) lvl = i + 1; }
     const curT = XP_THRESHOLDS[lvl - 1] || 0; const nextT = XP_THRESHOLDS[lvl] || curT + 1000;
     document.getElementById('xpVal').textContent = `Lv.${lvl}`;
     document.getElementById('xpBar').style.width = Math.min(100, ((xp - curT) / (nextT - curT)) * 100) + '%';
