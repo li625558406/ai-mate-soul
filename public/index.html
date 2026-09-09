@@ -156,6 +156,7 @@ body.view-chat #homePane { display:none; }
 .modal .field { margin-bottom:12px; }
 .modal .field label { display:block; font-size:12px; color:var(--text2); margin-bottom:5px; }
 .modal .field input, .modal select, .modal textarea { width:100%; padding:9px 11px; background:var(--bg); border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:13px; }
+.modal textarea { font-family: inherit; }
 .modal .field .hint { font-size:11px; color:var(--text2); margin-top:4px; line-height:1.5; }
 .modal .btn-row { display:flex; gap:8px; justify-content:flex-end; margin-top:16px; }
 .btn-primary { padding:9px 20px; background:var(--grad); color:#fff; border:none; border-radius:10px; font-size:13px; cursor:pointer; }
@@ -530,7 +531,7 @@ body.view-chat #homePane { display:none; }
 
     <div class="btn-row">
       <button class="btn-cancel" onclick="closeCharEditor()">取消</button>
-      <button class="btn-primary" onclick="saveCharEditor()">保存</button>
+      <button class="btn-primary" id="ceSaveBtn" onclick="saveCharEditor()">保存</button>
     </div>
     <div class="result" id="ceResult"></div>
   </div>
@@ -1692,32 +1693,34 @@ async function openCharMgr() {
 function closeCharMgr() { document.getElementById('charMgrModal').classList.remove('open'); }
 
 async function renderCharMgrList() {
-  const res = await fetch(API + '/api/characters');
-  const { characters } = await res.json();
-  const box = document.getElementById('charMgrList');
-  box.innerHTML = '';
-  if (!characters || characters.length === 0) {
-    box.innerHTML = '<div style="font-size:12px;color:var(--text2);text-align:center;padding:16px">暂无角色，点击上方"新建角色"创建</div>';
-    return;
-  }
-  characters.forEach(c => {
-    const row = document.createElement('div');
-    row.className = 'char-card';
-    row.innerHTML = `
-      <div style="display:flex;align-items:center;gap:10px">
-        <div style="width:40px;height:40px;border-radius:50%;overflow:hidden;background:var(--grad);flex-shrink:0;color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px"><img src="/api/characters/${c.id}/reference" alt=""></div>
-        <div style="flex:1;min-width:0">
-          <div class="cname">${escapeHtml(c.full_name)} <span style="font-size:12px;color:var(--text2);font-weight:400">${escapeHtml(c.gender || '')} ${c.age || '?'}岁</span></div>
-          <div class="cdesc">${escapeHtml(c.nickname || '')} · 动态知识 ${c.dynamicKnowledgeCount || 0} 条</div>
-        </div>
-        <button class="btn-cancel" style="padding:4px 10px;font-size:11px">编辑</button>
-      </div>`;
-    // 头像加载失败回退首字符（DOM 绑定，与主页头像同模式）
-    const img = row.querySelector('img');
-    img.onerror = function() { const p = this.parentNode; this.remove(); if (p) p.textContent = (c.full_name || '?')[0]; };
-    row.querySelector('button').onclick = () => openCharEditor(c.id);
-    box.appendChild(row);
-  });
+  try {
+    const res = await fetch(API + '/api/characters');
+    const { characters } = await res.json();
+    const box = document.getElementById('charMgrList');
+    box.innerHTML = '';
+    if (!characters || characters.length === 0) {
+      box.innerHTML = '<div style="font-size:12px;color:var(--text2);text-align:center;padding:16px">暂无角色，点击上方"新建角色"创建</div>';
+      return;
+    }
+    characters.forEach(c => {
+      const row = document.createElement('div');
+      row.className = 'char-card';
+      row.innerHTML = `
+        <div style="display:flex;align-items:center;gap:10px">
+          <div style="width:40px;height:40px;border-radius:50%;overflow:hidden;background:var(--grad);flex-shrink:0;color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px"><img src="/api/characters/${c.id}/reference" alt=""></div>
+          <div style="flex:1;min-width:0">
+            <div class="cname">${escapeHtml(c.full_name)} <span style="font-size:12px;color:var(--text2);font-weight:400">${escapeHtml(c.gender || '')} ${escapeHtml(String(c.age ?? '?'))}岁</span></div>
+            <div class="cdesc">${escapeHtml(c.nickname || '')} · 动态知识 ${c.dynamicKnowledgeCount || 0} 条</div>
+          </div>
+          <button class="btn-cancel" style="padding:4px 10px;font-size:11px">编辑</button>
+        </div>`;
+      // 头像加载失败回退首字符（DOM 绑定，与主页头像同模式）
+      const img = row.querySelector('img');
+      img.onerror = function() { const p = this.parentNode; this.remove(); if (p) p.textContent = (c.full_name || '?')[0]; };
+      row.querySelector('button').onclick = () => openCharEditor(c.id);
+      box.appendChild(row);
+    });
+  } catch (e) { alert('加载角色列表失败：' + e.message); }
 }
 
 function closeCharEditor() { document.getElementById('charEditorModal').classList.remove('open'); }
@@ -1740,22 +1743,24 @@ async function openCharEditor(id) {
 }
 
 async function openCharEditorNew() {
-  const res = await fetch(API + '/api/characters');
-  const { characters } = await res.json();
-  const sel = document.getElementById('ceCopyFrom');
-  sel.innerHTML = '<option value="">不复制，从空白开始</option>' +
-    characters.map(c => `<option value="${c.id}">${escapeHtml(c.full_name)}</option>`).join('');
-  ceState = { mode: 'new', id: null, profile: { gender: '女', hobbies: [], minefields: [] }, avatarFile: null, tab: 'form' };
-  document.getElementById('ceTitle').textContent = '新建角色';
-  document.getElementById('ceNewBar').style.display = 'block';
-  document.getElementById('ceDanger').style.display = 'none';
-  document.getElementById('ceAvatarImg').removeAttribute('src');
-  fillCeForm(ceState.profile);
-  document.getElementById('ceJson').value = JSON.stringify(ceState.profile, null, 2);
-  document.getElementById('ceResult').className = 'result';
-  setCeTab('form');
-  closeCharMgr();
-  document.getElementById('charEditorModal').classList.add('open');
+  try {
+    const res = await fetch(API + '/api/characters');
+    const { characters } = await res.json();
+    const sel = document.getElementById('ceCopyFrom');
+    sel.innerHTML = '<option value="">不复制，从空白开始</option>' +
+      characters.map(c => `<option value="${c.id}">${escapeHtml(c.full_name)}</option>`).join('');
+    ceState = { mode: 'new', id: null, profile: { gender: '女', hobbies: [], minefields: [] }, avatarFile: null, tab: 'form' };
+    document.getElementById('ceTitle').textContent = '新建角色';
+    document.getElementById('ceNewBar').style.display = 'block';
+    document.getElementById('ceDanger').style.display = 'none';
+    document.getElementById('ceAvatarImg').removeAttribute('src');
+    fillCeForm(ceState.profile);
+    document.getElementById('ceJson').value = JSON.stringify(ceState.profile, null, 2);
+    document.getElementById('ceResult').className = 'result';
+    setCeTab('form');
+    closeCharMgr();
+    document.getElementById('charEditorModal').classList.add('open');
+  } catch (e) { alert('打开新建弹窗失败：' + e.message); }
 }
 
 function fillCeForm(p) {
@@ -1854,54 +1859,67 @@ function ceAvatarSelected(input) {
 }
 
 async function saveCharEditor() {
-  let body;
-  if (ceState.tab === 'json') {
-    let parsed;
-    try {
-      parsed = JSON.parse(document.getElementById('ceJson').value);
-    } catch (e) {
-      ceMsg(false, 'JSON 语法错误：' + e.message);
-      return;
-    }
-    if (ceState.mode === 'edit' && parsed.id !== ceState.id) {
-      ceMsg(false, '不允许修改角色 id');
-      return;
-    }
-    body = { full: parsed };
-  } else {
-    const patch = gatherCeProfile();
-    delete patch.id; // id 不可经 patch 修改
-    body = { patch };
-  }
-
+  const btn = document.getElementById('ceSaveBtn');
+  if (btn.disabled) return;
+  btn.disabled = true; btn.textContent = '保存中...';
   try {
-    if (ceState.mode === 'new') {
-      const copyFrom = document.getElementById('ceCopyFrom').value;
-      const profile = body.full || body.patch;
-      const res = await fetch(API + '/api/characters', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ profile, copyFrom: copyFrom || undefined }),
-      });
-      if (!res.ok) { ceMsg(false, (await res.json()).error || '创建失败'); return; }
-      const { id } = await res.json();
-      ceState.id = id; ceState.mode = 'edit';
-      document.getElementById('ceDanger').style.display = 'block';
-      if (ceState.avatarFile) await uploadCeAvatar(id);
-      ceMsg(true, '创建成功，可继续编辑');
+    let body;
+    if (ceState.tab === 'json') {
+      let parsed;
+      try {
+        parsed = JSON.parse(document.getElementById('ceJson').value);
+      } catch (e) {
+        ceMsg(false, 'JSON 语法错误：' + e.message);
+        return;
+      }
+      if (ceState.mode === 'edit' && parsed.id !== ceState.id) {
+        ceMsg(false, '不允许修改角色 id');
+        return;
+      }
+      body = { full: parsed };
     } else {
-      const res = await fetch(API + '/api/characters/' + ceState.id, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) { ceMsg(false, (await res.json()).error || '保存失败'); return; }
-      if (ceState.avatarFile) await uploadCeAvatar(ceState.id);
-      ceMsg(true, '已保存并生效');
+      const patch = gatherCeProfile();
+      delete patch.id; // id 不可经 patch 修改
+      body = { patch };
     }
-    await syncCharToHome();
-  } catch (e) {
-    ceMsg(false, '请求失败：' + e.message);
+
+    try {
+      if (ceState.mode === 'new') {
+        const copyFrom = document.getElementById('ceCopyFrom').value;
+        const profile = body.full || body.patch;
+        const res = await fetch(API + '/api/characters', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ profile, copyFrom: copyFrom || undefined }),
+        });
+        if (!res.ok) { ceMsg(false, (await res.json()).error || '创建失败'); return; }
+        const { id } = await res.json();
+        ceState.id = id; ceState.mode = 'edit';
+        document.getElementById('ceDanger').style.display = 'block';
+        let avatarOk = true;
+        if (ceState.avatarFile) avatarOk = await uploadCeAvatar(id);
+        if (avatarOk) ceMsg(true, '创建成功，可继续编辑');
+      } else {
+        const res = await fetch(API + '/api/characters/' + ceState.id, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) { ceMsg(false, (await res.json()).error || '保存失败'); return; }
+        // 同步本地档案缓存（JSON 页签保存后 ceState.profile 仍是旧值，会让删除/重置确认用旧名死锁）
+        ceState.profile = body.full ? body.full : ceState.profile;
+        document.getElementById('ceTitle').textContent = '编辑角色 · ' + ceState.profile.full_name;
+        let avatarOk = true;
+        if (ceState.avatarFile) avatarOk = await uploadCeAvatar(ceState.id);
+        if (avatarOk) ceMsg(true, '已保存并生效');
+        // 头像失败时 uploadCeAvatar 已显示"档案已保存但头像失败"的错误信息，不再覆盖
+      }
+      await syncCharToHome();
+    } catch (e) {
+      ceMsg(false, '请求失败：' + e.message);
+    }
+  } finally {
+    btn.disabled = false; btn.textContent = '保存';
   }
 }
 
@@ -1910,14 +1928,29 @@ async function uploadCeAvatar(id) {
   fd.append('avatar', ceState.avatarFile);
   ceState.avatarFile = null;
   document.getElementById('ceAvatarInput').value = '';
-  const res = await fetch(API + '/api/characters/' + id + '/avatar', { method: 'POST', body: fd });
-  if (!res.ok) ceMsg(false, (await res.json()).error || '头像上传失败');
+  try {
+    const res = await fetch(API + '/api/characters/' + id + '/avatar', { method: 'POST', body: fd });
+    if (!res.ok) { ceMsg(false, '档案已保存，但头像上传失败：' + ((await res.json()).error || '未知错误')); return false; }
+    return true;
+  } catch (e) { ceMsg(false, '档案已保存，但头像上传失败：' + e.message); return false; }
 }
 
-// 角色数据变更后同步主页：loadCharacters() 内部会自动 selectCharacter 第一个角色，
-// 进而触发 refreshState() + loadChatHistory()，无需额外调用
+// 角色数据变更后同步主页列表；保存人设不应改变当前对话对象，原选中角色仍存在时恢复选中
 async function syncCharToHome() {
-  await loadCharacters();
+  const prevId = currentCharacterId;
+  await loadCharacters(); // 内部自动 selectCharacter 第一个角色并刷新状态
+  if (prevId && currentCharacterId !== prevId) {
+    try {
+      const res = await fetch(API + '/api/characters');
+      const { characters } = await res.json();
+      const idx = characters.findIndex(c => c.id === prevId);
+      if (idx >= 0) {
+        const el = document.getElementById('characterList').children[idx];
+        if (el) selectCharacter(characters[idx], el, { autoSelect: true });
+      }
+      // 角色已不存在（被删除）：维持列表第一个角色的默认选中
+    } catch { /* 恢复选中失败不影响主流程 */ }
+  }
 }
 
 async function resetCharState() {
@@ -1941,8 +1974,7 @@ async function deleteChar() {
     if (!res.ok) { ceMsg(false, (await res.json()).error || '删除失败'); return; }
     closeCharEditor();
     closeCharMgr();
-    await loadCharacters(); // 自动选中列表第一个角色（或显示"还没有角色"）
-    await refreshState();
+    await loadCharacters(); // 自动选中列表第一个角色（或显示"还没有角色"），内部已触发 refreshState，无需额外调用
   } catch (e) { ceMsg(false, '请求失败：' + e.message); }
 }
 
