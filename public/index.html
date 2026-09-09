@@ -204,6 +204,21 @@ body.view-chat #homePane { display:none; }
 ::-webkit-scrollbar { width:6px; }
 ::-webkit-scrollbar-track { background:transparent; }
 ::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
+
+/* ===== 桌面端 ≥900px：主页左栏常驻 + 聊天右区 ===== */
+@media (min-width: 900px) {
+  #homePane { width:340px; border-right:1px solid var(--border); background:var(--surface); }
+  #chatPane { flex:1; }
+  #startChatBtn, #btnBackHome { display:none !important; }
+  body.view-home #chatPane { display:flex; }   /* 桌面端忽略手机互斥类 */
+  body.view-chat #homePane { display:flex; }
+  .hero-card { padding:16px 14px; }
+  .hero-avatar { width:52px; height:52px; font-size:20px; }
+  .messages { padding:20px 28px; }
+  .msg { max-width:66%; }
+  .input-area { padding:14px 24px; }
+  .diary-panel, .anniv-panel { width:400px; }
+}
 </style>
 </head>
 <body class="view-home">
