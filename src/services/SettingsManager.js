@@ -7,6 +7,7 @@ const DEFAULT_SETTINGS = {
   chat: { baseURL: '', apiKey: '', model: '' },
   image: { baseURL: '', apiKey: '' },
   tts: { baseURL: '', apiKey: '' },
+  video: { baseURL: '', apiKey: '', model: '' },
 };
 
 export class SettingsManager {
@@ -26,29 +27,9 @@ export class SettingsManager {
     if (!this._data) this._data = {};
     this._data = this._deepMerge(structuredClone(DEFAULT_SETTINGS), this._data);
 
-    // First run: populate from .env
-    this._migrateFromEnv();
     // Migrate old multi-provider format
     this._migrateOldFormat();
     this._save();
-  }
-
-  _migrateFromEnv() {
-    const env = process.env;
-    // Chat: pick first available provider from env
-    if (!this._data.chat.apiKey) {
-      for (const name of ['qwen', 'deepseek', 'openai', 'claude']) {
-        if (env[`${name.toUpperCase()}_API_KEY`]) {
-          this._data.chat.apiKey = env[`${name.toUpperCase()}_API_KEY`];
-          this._data.chat.baseURL = env[`${name.toUpperCase()}_BASE_URL`] || '';
-          this._data.chat.model = env[`${name.toUpperCase()}_MODEL`] || '';
-          break;
-        }
-      }
-    }
-    // DashScope
-    if (!this._data.image.apiKey && env.DASHSCOPE_API_KEY) this._data.image.apiKey = env.DASHSCOPE_API_KEY;
-    if (!this._data.tts.apiKey && env.DASHSCOPE_API_KEY) this._data.tts.apiKey = env.DASHSCOPE_API_KEY;
   }
 
   /** Migrate old format { chat: { providers: { deepseek: {...} } } } → flat */

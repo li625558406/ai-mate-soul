@@ -122,23 +122,10 @@ npm install
 
 ### 配置
 
-复制或编辑 `.env` 文件：
+模型 API 全部通过 **Web 界面的设置页面**配置（对话 / 绘图 / TTS），持久化在 `data/settings.json`，保存即时生效，无需重启。
 
-```env
-# 对话 LLM（必填，支持 OpenAI 兼容 API）
-CHAT_API_KEY=your_api_key
-CHAT_BASE_URL=https://api.openai.com/v1
-CHAT_MODEL=gpt-4o
-
-# 阿里云 DashScope（语音 + 绘图，选填）
-DASHSCOPE_API_KEY=your_dashscope_key
-
-# 服务端口
-PORT=3000
-HTTPS_PORT=3443
-```
-
-> 也可在启动后通过 Web 界面的设置页面配置。
+- `.env` 仅需配置服务端口：`PORT`（默认 3000）、`HTTPS_PORT`（默认 3443）
+- 对话 API 未配置时服务仍可启动，页面会提示"去配置"
 
 ### 启动
 
