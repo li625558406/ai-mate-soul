@@ -143,6 +143,8 @@ body.view-chat #homePane { display:none; }
 
 /* ===== 弹层（modal / panel / overlay） ===== */
 .modal-overlay { position:fixed; inset:0; background:rgba(90,74,66,.35); backdrop-filter:blur(4px); z-index:200; display:none; align-items:center; justify-content:center; }
+/* 导入弹层从设置弹层内打开，需高于普通弹层，否则被设置弹层遮挡（DOM 顺序靠前绘制在下） */
+#importModal { z-index:210; }
 .modal-overlay.open { display:flex; }
 .modal { background:var(--surface); border-radius:16px; padding:22px; width:440px; max-width:92vw; max-height:88vh; overflow-y:auto; box-shadow:0 8px 40px rgba(90,74,66,.2); }
 .modal h3 { font-size:16px; margin-bottom:14px; }
@@ -484,7 +486,7 @@ async function loadCharacters() {
     const genderIcon = genderMap[c.gender] || c.gender;
     div.innerHTML = `<div style="display:flex;align-items:center;gap:8px">
       <div style="width:36px;height:36px;border-radius:50%;background:var(--grad);display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;flex-shrink:0;overflow:hidden">
-        <img src="/api/characters/${c.id}/reference" style="width:100%;height:100%;object-fit:cover" onerror="this.remove();this.parentNode.textContent='${c.full_name[0]}'">
+        <img src="/api/characters/${c.id}/reference" style="width:100%;height:100%;object-fit:cover">
       </div>
       <div style="flex:1;min-width:0">
         <div class="cname">${c.full_name} <span style="font-size:12px;color:var(--text2);font-weight:400">${genderIcon} ${c.age}岁</span></div>
@@ -492,10 +494,30 @@ async function loadCharacters() {
       </div>
       <button class="btn-cancel" onclick="event.stopPropagation();showCharDetail('${c.id}')" style="padding:4px 10px;font-size:11px">详情</button>
     </div>`;
+    // 头像加载失败回退为名字首字符（DOM 绑定，避免内联引号注入）
+    const cardImg = div.querySelector('img');
+    cardImg.onerror = function() {
+      const box = this.parentNode;
+      this.remove();
+      if (box) box.textContent = (c.full_name || '?')[0];
+    };
     div.onclick = () => selectCharacter(c, div);
     list.appendChild(div);
   });
   if (characters.length > 0) selectCharacter(characters[0], list.firstChild, { autoSelect: true });
+}
+
+// 设置头像：正常加载显示参考图，失败回退为名字首字符（DOM 绑定事件，避免内联引号注入；先缓存 parentNode 再 remove，原写法 remove 后 parentNode 为 null 会抛错）
+function setAvatar(el, refUrl, fallbackChar) {
+  el.textContent = '';
+  const img = document.createElement('img');
+  img.src = refUrl;
+  img.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:50%';
+  img.onerror = function() {
+    this.remove();
+    el.textContent = fallbackChar || '?';
+  };
+  el.appendChild(img);
 }
 
 function selectCharacter(c, el, opts = {}) {
@@ -514,7 +536,7 @@ function selectCharacter(c, el, opts = {}) {
   // Chat header: avatar image + name + basic info
   const avatarEl = document.getElementById('headerAvatar');
   const refUrl = '/api/characters/' + c.id + '/reference';
-  avatarEl.innerHTML = `<img src="${refUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:50%" onerror="this.remove();document.getElementById('headerAvatar').textContent='${c.full_name[0]}'">`;
+  setAvatar(avatarEl, refUrl, (c.full_name || '?')[0]);
   document.getElementById('headerName').textContent = c.full_name;
   const genderMap = { '女': '♀', '男': '♂' };
   const genderIcon = genderMap[c.gender] || c.gender;
@@ -522,7 +544,7 @@ function selectCharacter(c, el, opts = {}) {
   // Hero 卡（主页）
   document.getElementById('heroName').textContent = c.full_name;
   document.getElementById('heroSub').textContent = `${c.nickname} · ${genderIcon} · ${c.age}岁 · ${c.birthday}`;
-  document.getElementById('heroAvatar').innerHTML = `<img src="${refUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:50%" onerror="this.remove();document.getElementById('heroAvatar').textContent='${c.full_name[0]}'">`;
+  setAvatar(document.getElementById('heroAvatar'), refUrl, (c.full_name || '?')[0]);
   document.getElementById('msgInput').disabled = false;
   document.getElementById('sendBtn').disabled = false;
   document.getElementById('videoFeatBtn').disabled = false;
@@ -765,7 +787,10 @@ async function sendMessage() {
             typing.classList.remove('show');
             scrollBottom();
           } else if (currentEvent === 'error') {
-            aiMsgEl.querySelector('.bubble').textContent = `[Error] ${JSON.parse(data).error}`;
+            // 后端 error 事件 data 可能是纯字符串（ChatService yield）或 {error} 对象（index.js catch）
+            const errData = JSON.parse(data);
+            const errText = typeof errData === 'string' ? errData : (errData.error || '未知错误');
+            aiMsgEl.querySelector('.bubble').textContent = `[Error] ${errText}`;
             typing.classList.remove('show');
           } else if (currentEvent === 'thought') {
             const thoughtEl = aiMsgEl.querySelector('.thought');
@@ -851,14 +876,14 @@ function appendCapsule(aiMsgEl, m) {
     parts.push(`<span class="${cls}">&#9829; 好感 ${m.affectionDelta > 0 ? '+' : ''}${m.affectionDelta}</span>`);
   }
   if (m.growthBonus > 0) parts.push(`<span class="up">成长 +${m.growthBonus}</span>`);
-  parts.push(`<span>+${m.xpGained}xp</span>`);
+  parts.push(`<span>+${escapeHtml(m.xpGained)}xp</span>`);
   if (m.moodDelta !== undefined && m.moodDelta !== 0) {
     const cls = m.moodDelta > 0 ? 'up' : 'down';
     parts.push(`<span class="${cls}">心情 ${m.moodDelta > 0 ? '+' : ''}${Math.round(m.moodDelta * 10) / 10}</span>`);
   }
   const moodLabelMap = { joyful:'开心', happy:'愉悦', uneasy:'不悦', angry:'愤怒', cold_war:'冷战' };
   if (m.emotionState && m.emotionState !== 'calm' && m.emotionState !== 'comfortable') {
-    parts.push(`<span>${moodLabelMap[m.emotionState] || m.emotionState}</span>`);
+    parts.push(`<span>${escapeHtml(moodLabelMap[m.emotionState] || m.emotionState)}</span>`);
   }
   if (m.triggeredMinefield) parts.push(`<span class="mine">&#9888; 雷区：${escapeHtml(m.triggeredMinefield)}</span>`);
   if (m.leveledUp) parts.push(`<span class="levelup">&#10024; LEVEL UP!</span>`);
@@ -972,7 +997,7 @@ async function generateDiary() {
     if (data.success) {
       appendMsg('system', `日记已生成 (${data.diary?.diary_date || '今日'})`);
     } else {
-      appendMsg('system', `日记生成失败: ${data.error || '未知错误'}`);
+      appendMsg('system', `日记生成失败: ${data.error || data.reason || '未知错误'}`);
     }
   } catch(e) {
     appendMsg('system', `日记生成失败: ${e.message}`);
@@ -1324,7 +1349,7 @@ async function showCharDetail(characterId) {
     const c = await res.json();
     if (!c || c.error) return;
     const avatarDiv = document.getElementById('charDetailAvatar');
-    avatarDiv.innerHTML = `<img src="/api/characters/${characterId}/reference" style="width:100%;height:100%;object-fit:cover" onerror="this.remove();this.parentNode.textContent='${(c.full_name||c.name)[0]}'">`;
+    setAvatar(avatarDiv, '/api/characters/' + characterId + '/reference', ((c.full_name || c.name) || '?')[0]);
     document.getElementById('charDetailName').textContent = c.full_name || c.name;
     const genderMap = { '女': '♀', '男': '♂' };
     document.getElementById('charDetailSub').textContent = `${c.nickname || ''} · ${genderMap[c.gender]||c.gender} · ${c.age||'?'}岁 · ${c.birthday||'?'}`;
