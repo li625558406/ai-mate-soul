@@ -155,7 +155,7 @@ body.view-chat #homePane { display:none; }
 .modal h3 { font-size:16px; margin-bottom:14px; }
 .modal .field { margin-bottom:12px; }
 .modal .field label { display:block; font-size:12px; color:var(--text2); margin-bottom:5px; }
-.modal .field input, .modal select { width:100%; padding:9px 11px; background:var(--bg); border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:13px; }
+.modal .field input, .modal select, .modal textarea { width:100%; padding:9px 11px; background:var(--bg); border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:13px; }
 .modal .field .hint { font-size:11px; color:var(--text2); margin-top:4px; line-height:1.5; }
 .modal .btn-row { display:flex; gap:8px; justify-content:flex-end; margin-top:16px; }
 .btn-primary { padding:9px 20px; background:var(--grad); color:#fff; border:none; border-radius:10px; font-size:13px; cursor:pointer; }
@@ -265,6 +265,7 @@ body.view-chat #homePane { display:none; }
       <button class="feat-btn" onclick="openDiary()"><span class="feat-icon">&#128221;</span>秘密日记</button>
       <button class="feat-btn" onclick="openAnniv()"><span class="feat-icon">&#128197;</span>纪念日</button>
       <button class="feat-btn" id="videoFeatBtn" onclick="generateVideo()" disabled><span class="feat-icon">&#127916;</span><span class="feat-desc">AI 拍短视频</span></button>
+      <button class="feat-btn" onclick="openCharMgr()"><span class="feat-icon">&#127917;</span>角色管理</button>
     </div>
 
     <div class="facts-card">
@@ -439,6 +440,7 @@ body.view-chat #homePane { display:none; }
       <button class="btn-cancel" onclick="exportSoul()">&#128230; 导出备份</button>
       <button class="btn-cancel" onclick="openImportModal()">&#128229; 导入备份</button>
       <button class="btn-cancel" style="color:var(--red); border-color:rgba(224,85,85,.4)" onclick="clearAllChat()">&#128465; 清除聊天记录</button>
+      <button class="btn-cancel" onclick="closeSettings(); openCharMgr()">&#127917; 角色管理</button>
     </div>
     <div class="hint" style="font-size:11px;color:var(--text2);margin-top:6px">备份导出为加密 .soul 文件，导入需提供导出时的密钥</div>
 
@@ -447,6 +449,90 @@ body.view-chat #homePane { display:none; }
       <button class="btn-primary" id="saveSettingsBtn" onclick="saveSettings()">保存并生效</button>
     </div>
     <div class="result" id="settingsResult"></div>
+  </div>
+</div>
+
+<!-- 角色管理弹窗 -->
+<div class="modal-overlay" id="charMgrModal" onclick="if(event.target===this)closeCharMgr()">
+  <div class="modal" style="width:640px">
+    <button class="modal-close" onclick="closeCharMgr()" title="关闭">&#215;</button>
+    <h3>&#127917; 角色管理</h3>
+    <div style="display:flex;gap:8px;margin-bottom:4px">
+      <button class="btn-primary" onclick="openCharEditorNew()">+ 新建角色</button>
+    </div>
+    <div id="charMgrList" style="margin-top:10px;display:flex;flex-direction:column;gap:8px"></div>
+  </div>
+</div>
+
+<!-- 角色编辑弹窗 -->
+<div class="modal-overlay" id="charEditorModal" style="z-index:210" onclick="if(event.target===this)closeCharEditor()">
+  <div class="modal" style="width:640px">
+    <button class="modal-close" onclick="closeCharEditor()" title="关闭">&#215;</button>
+    <h3 id="ceTitle">编辑角色</h3>
+
+    <div id="ceNewBar" class="field" style="display:none">
+      <label>复制自现有角色（可选）</label>
+      <select id="ceCopyFrom"><option value="">不复制，从空白开始</option></select>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+      <img id="ceAvatarImg" alt="" style="width:64px;height:64px;border-radius:50%;object-fit:cover;border:1px solid var(--border);background:var(--bg)">
+      <div>
+        <button class="btn-cancel" onclick="document.getElementById('ceAvatarInput').click()">更换图片</button>
+        <div class="hint">支持 jpg / png / webp，不超过 5MB，保存时上传</div>
+      </div>
+      <input type="file" id="ceAvatarInput" accept="image/jpeg,image/png,image/webp" style="display:none" onchange="ceAvatarSelected(this)">
+    </div>
+
+    <div style="display:flex;gap:6px;margin-bottom:12px">
+      <button class="btn-cancel" id="ceTabFormBtn" onclick="switchCeTab('form')">表单编辑</button>
+      <button class="btn-cancel" id="ceTabJsonBtn" onclick="switchCeTab('json')">高级 JSON</button>
+    </div>
+
+    <div id="ceFormPane">
+      <h4 class="section-title">基本信息</h4>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div class="field"><label>全名 *</label><input type="text" id="ceName" autocomplete="off"></div>
+        <div class="field"><label>昵称</label><input type="text" id="ceNickname" autocomplete="off"></div>
+        <div class="field"><label>性别</label>
+          <select id="ceGender"><option>女</option><option>男</option><option>其他</option></select>
+        </div>
+        <div class="field"><label>生日（MM-DD）</label><input type="text" id="ceBirthday" placeholder="03-15" autocomplete="off"></div>
+        <div class="field"><label>年龄</label><input type="number" id="ceAge" min="1" max="120"></div>
+        <div class="field"><label>原型 archetype</label><input type="text" id="ceArchetype" placeholder="neighbor" autocomplete="off"></div>
+      </div>
+      <div class="field"><label>教育 / 职业</label><input type="text" id="ceEducation" autocomplete="off"></div>
+
+      <h4 class="section-title">人设</h4>
+      <div class="field"><label>性格</label><textarea id="cePersonality" rows="2"></textarea></div>
+      <div class="field"><label>背景故事</label><textarea id="ceBackground" rows="4"></textarea></div>
+      <div class="field"><label>说话风格</label><textarea id="ceSpeaking" rows="2"></textarea></div>
+      <div class="field"><label>声音 preset（TTS）</label><input type="text" id="ceVoice" placeholder="Jennifer" autocomplete="off"></div>
+      <div class="field"><label>爱好（每行一条）</label><textarea id="ceHobbies" rows="4"></textarea></div>
+
+      <h4 class="section-title">雷区（触发词为正则）</h4>
+      <div id="ceMinefields"></div>
+      <button class="btn-cancel" onclick="addCeMineRow('','','')">+ 添加雷区</button>
+    </div>
+
+    <div id="ceJsonPane" style="display:none">
+      <div class="hint">直接编辑整份角色档案 JSON，保存前会做语法校验。角色 id 不可修改。</div>
+      <textarea id="ceJson" spellcheck="false" style="width:100%;height:380px;font-family:monospace;font-size:12px;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);margin-top:6px"></textarea>
+    </div>
+
+    <div id="ceDanger" style="display:none;margin-top:14px;padding-top:10px;border-top:1px dashed var(--border)">
+      <div style="font-size:12px;color:var(--red);font-weight:700">危险操作</div>
+      <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">
+        <button class="btn-cancel" onclick="resetCharState()">重置状态（清空好感/聊天/记忆）</button>
+        <button class="btn-cancel" style="color:var(--red);border-color:rgba(224,85,85,.4)" onclick="deleteChar()">删除角色</button>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn-cancel" onclick="closeCharEditor()">取消</button>
+      <button class="btn-primary" onclick="saveCharEditor()">保存</button>
+    </div>
+    <div class="result" id="ceResult"></div>
   </div>
 </div>
 
