@@ -724,6 +724,10 @@ httpServer.listen(PORT, () => {
   console.log(`  AI Mate Soul v4 - 终极沉浸版`);
   console.log(`  http://localhost:${PORT}`);
   if (httpsServer) {
+    // HTTPS 是可选增强（手机麦克风），端口被占时仅告警降级为 HTTP，不拖垮主服务
+    httpsServer.on('error', (err) => {
+      console.warn(`[WARN] HTTPS ${HTTPS_PORT} 端口监听失败，已降级为仅 HTTP: ${err.message}`);
+    });
     httpsServer.listen(HTTPS_PORT, () => {
       console.log(`  https://localhost:${HTTPS_PORT}`);
       const nets = os.networkInterfaces();
