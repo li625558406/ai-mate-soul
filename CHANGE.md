@@ -1,5 +1,38 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-09 — 角色可视化管理（编辑/换图/新增/重置/删除）
+
+### 改动主题
+新增角色全生命周期可视化管理：无需手动改 JSON 文件，即可在 Web 端编辑角色档案、更换头像、以复制方式新增角色、重置运行时状态、彻底删除角色（含数据与媒体清理）。
+
+### 核心变更点
+1. **CharacterManager 写方法**：`createCharacter`（支持 `copyFrom` 从现有角色复制档案）、`saveProfile`（patch/full 双模式，仅传变更字段或整体覆盖）、`saveAvatar`（原子换图）、`deleteCharacter`；id 正则校验下沉到服务层，禁止通过写 API 修改 id；档案落盘统一采用临时文件 + rename 原子写，避免写一半损坏。
+2. **运行时数据清理**：`DatabaseManager.deleteCharacterData` 以单事务清除该角色相关的 10 张表，并按 photos 表精确清单清理 `public/photos`、`public/videos` 媒体文件（不误删 character_id 含相同子串的其他角色文件）；`MemoryService.removeCharacter` 同步清理 `data/memory/` 记忆文件与内存索引实例。
+3. **5 个新 API**：`POST /api/characters`（可复制创建）、`PUT /api/characters/:id`（patch/full）、`POST /api/characters/:id/avatar`（魔数校验 + 5MB 限制）、`POST /api/characters/:id/reset`（只清运行时状态，保留档案）、`DELETE /api/characters/:id?confirm=全名`（彻底删除，要求输入角色全名确认的可逆性前置）。
+4. **前端双弹窗**（`public/index.html`）：角色管理列表弹窗 + 角色编辑器弹窗（分组表单 / 雷区动态行 / 高级 JSON 页签 / 头像预览上传 / 危险区），入口在主页功能宫格与设置弹窗；保存防重、JSON 保存后状态同步、保存后恢复当前选中角色。
+5. **sw.js 缓存版本** soul-v4 → soul-v5，保证新前端在已访问浏览器生效。
+6. 22 项端到端对抗验证全部通过（详见下一条目）。
+
+### 遗留事项
+- 写操作无鉴权（局域网可增删角色，公网部署前需认证）。
+- 6MB 超限上传返回 500 非 413（multer LIMIT_FILE_SIZE 未映射状态码）。
+- 删除最后一个角色后主页 header/hero 残留旧显示（刷新恢复，属 loadCharacters 空列表早退的既有边界）。
+- 表单编辑不覆盖冷门深层字段（living_info 等需用高级 JSON 页签）。
+
+## 2026-09-09 — 设置弹窗交互优化
+
+### 改动主题
+`public/index.html` 设置弹窗易用性改进：宽度加大 + 两种快捷关闭方式。
+
+### 核心变更点
+1. 设置弹窗宽度 440px → 560px（`max-width:92vw` 保留，手机端不受影响）。
+2. 点击遮罩空白处关闭弹窗（`event.target===this` 判断，点击弹窗内部不触发）。
+3. 右上角新增关闭按钮（`.modal-close`，hover 反馈）；`.modal` 补 `position:relative` 定位锚点。
+4. `sw.js` 缓存版本 soul-v3 → soul-v4，避免旧 index.html 缓存导致改动不生效。
+
+### 遗留事项
+- 无（仅设置弹窗应用此交互，其他弹窗未动）。
+
 ## 2026-09-09 — 前端界面重设计（角色主页中心 + 暖调陪伴风）
 
 ### 改动主题
@@ -61,3 +94,18 @@
 ### 遗留事项
 - `.env` 中残留的 LLM 相关变量（QWEN_* / DASHSCOPE_API_KEY 等）已不生效，仅 `PORT` / `HTTPS_PORT` 仍被读取；可择机清理。
 - 服务端已有多个历史端口占用（3001 上另有无关进程 one-api），与本改动无关。
+
+## 2026-09-09 — 角色管理 API 端到端对抗性验证 + HTTPS 端口降级修复
+
+### 改动主题
+对角色管理写操作 API（创建/编辑/头像/reset/删除）做 22 项端到端对抗验证，全部通过；期间发现并修复 HTTPS 端口被占导致整个进程崩溃的问题。
+
+### 核心变更点
+1. **对抗验证结论**：Happy Path 5 项（创建/patch 编辑/头像魔数校验上传/reset/confirm 删除）+ 对抗 17 项（非法 id、连续下划线、过短 id、重复 id、缺 full_name、profile 数组、copyFrom 不存在、patch/full 改 id 防御、坏 JSON、不存在角色 PUT/DELETE/reset、confirm 错名/空名、假图片、6MB 超限上传）全部符合预期。
+2. **数据完整性**：lin_004 reset 后 10 张表行数全 0、`data/memory/test_user__lin_004.json` 删除、3 张照片文件清除；媒体误删专项（删除 test_004 时 `u1_lin_004_123.jpg` 按 character_id 精确保留、`u1_test_004_456.jpg` 正确删除）通过。
+3. **修复**（`src/index.js`，commit b353e42）：`httpsServer.listen` 增加 `error` 处理，HTTPS 端口（默认 3443）被占时告警降级为仅 HTTP，不再未捕获崩溃拖垮主服务；已用占位监听器实测降级路径生效。
+
+### 遗留事项
+- 角色编辑写操作均无鉴权（局域网任意客户端可增删角色），当前单机自用可接受，公网部署前需加认证层。
+- 6MB 超限头像上传返回 500（multer LIMIT_FILE_SIZE 未映射为 413），非 2xx 拦截有效，体验可优化。
+- `public/photos/` 下 lin_004 的 3 张 git 跟踪测试照片已随授权 reset 清除（git status 显示 D），如需保留历史可 `git checkout` 恢复。
