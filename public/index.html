@@ -1853,6 +1853,99 @@ function ceAvatarSelected(input) {
   reader.readAsDataURL(f);
 }
 
+async function saveCharEditor() {
+  let body;
+  if (ceState.tab === 'json') {
+    let parsed;
+    try {
+      parsed = JSON.parse(document.getElementById('ceJson').value);
+    } catch (e) {
+      ceMsg(false, 'JSON 语法错误：' + e.message);
+      return;
+    }
+    if (ceState.mode === 'edit' && parsed.id !== ceState.id) {
+      ceMsg(false, '不允许修改角色 id');
+      return;
+    }
+    body = { full: parsed };
+  } else {
+    const patch = gatherCeProfile();
+    delete patch.id; // id 不可经 patch 修改
+    body = { patch };
+  }
+
+  try {
+    if (ceState.mode === 'new') {
+      const copyFrom = document.getElementById('ceCopyFrom').value;
+      const profile = body.full || body.patch;
+      const res = await fetch(API + '/api/characters', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile, copyFrom: copyFrom || undefined }),
+      });
+      if (!res.ok) { ceMsg(false, (await res.json()).error || '创建失败'); return; }
+      const { id } = await res.json();
+      ceState.id = id; ceState.mode = 'edit';
+      document.getElementById('ceDanger').style.display = 'block';
+      if (ceState.avatarFile) await uploadCeAvatar(id);
+      ceMsg(true, '创建成功，可继续编辑');
+    } else {
+      const res = await fetch(API + '/api/characters/' + ceState.id, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) { ceMsg(false, (await res.json()).error || '保存失败'); return; }
+      if (ceState.avatarFile) await uploadCeAvatar(ceState.id);
+      ceMsg(true, '已保存并生效');
+    }
+    await syncCharToHome();
+  } catch (e) {
+    ceMsg(false, '请求失败：' + e.message);
+  }
+}
+
+async function uploadCeAvatar(id) {
+  const fd = new FormData();
+  fd.append('avatar', ceState.avatarFile);
+  ceState.avatarFile = null;
+  document.getElementById('ceAvatarInput').value = '';
+  const res = await fetch(API + '/api/characters/' + id + '/avatar', { method: 'POST', body: fd });
+  if (!res.ok) ceMsg(false, (await res.json()).error || '头像上传失败');
+}
+
+// 角色数据变更后同步主页：loadCharacters() 内部会自动 selectCharacter 第一个角色，
+// 进而触发 refreshState() + loadChatHistory()，无需额外调用
+async function syncCharToHome() {
+  await loadCharacters();
+}
+
+async function resetCharState() {
+  const p = ceState.profile;
+  if (!confirm(`确定重置「${p.full_name}」的运行时状态？\n\n好感度、等级、聊天记录、照片、日记、长期记忆将全部清空，不可恢复。\n角色人设档案不受影响。`)) return;
+  try {
+    const res = await fetch(API + '/api/characters/' + ceState.id + '/reset', { method: 'POST' });
+    if (!res.ok) { ceMsg(false, (await res.json()).error || '重置失败'); return; }
+    ceMsg(true, '已重置运行时状态');
+    await syncCharToHome();
+  } catch (e) { ceMsg(false, '请求失败：' + e.message); }
+}
+
+async function deleteChar() {
+  const p = ceState.profile;
+  const input = prompt(`此操作将彻底删除角色「${p.full_name}」\n及其全部数据（档案、聊天、照片、日记、记忆），不可恢复。\n\n请输入角色全名以确认：`);
+  if (input === null) return;
+  if (input.trim() !== p.full_name) { ceMsg(false, '输入与角色全名不匹配，未删除'); return; }
+  try {
+    const res = await fetch(API + '/api/characters/' + ceState.id + '?confirm=' + encodeURIComponent(p.full_name), { method: 'DELETE' });
+    if (!res.ok) { ceMsg(false, (await res.json()).error || '删除失败'); return; }
+    closeCharEditor();
+    closeCharMgr();
+    await loadCharacters(); // 自动选中列表第一个角色（或显示"还没有角色"）
+    await refreshState();
+  } catch (e) { ceMsg(false, '请求失败：' + e.message); }
+}
+
 async function saveSettings() {
   const btn = document.getElementById('saveSettingsBtn');
   const resultEl = document.getElementById('settingsResult');
