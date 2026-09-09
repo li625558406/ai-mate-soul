@@ -149,7 +149,9 @@ body.view-chat #homePane { display:none; }
 /* 导入弹层从设置弹层内打开，需高于普通弹层，否则被设置弹层遮挡（DOM 顺序靠前绘制在下） */
 #importModal { z-index:210; }
 .modal-overlay.open { display:flex; }
-.modal { background:var(--surface); border-radius:16px; padding:22px; width:440px; max-width:92vw; max-height:88vh; overflow-y:auto; box-shadow:0 8px 40px rgba(90,74,66,.2); }
+.modal { position:relative; background:var(--surface); border-radius:16px; padding:22px; width:440px; max-width:92vw; max-height:88vh; overflow-y:auto; box-shadow:0 8px 40px rgba(90,74,66,.2); }
+.modal-close { position:absolute; top:12px; right:12px; width:28px; height:28px; border:none; background:transparent; color:var(--text2); font-size:20px; line-height:1; cursor:pointer; border-radius:8px; display:flex; align-items:center; justify-content:center; }
+.modal-close:hover { background:var(--bg); color:var(--text); }
 .modal h3 { font-size:16px; margin-bottom:14px; }
 .modal .field { margin-bottom:12px; }
 .modal .field label { display:block; font-size:12px; color:var(--text2); margin-bottom:5px; }
@@ -409,8 +411,9 @@ body.view-chat #homePane { display:none; }
 </div>
 
 <!-- Settings Modal -->
-<div class="modal-overlay" id="settingsModal">
-  <div class="modal">
+<div class="modal-overlay" id="settingsModal" onclick="if(event.target===this)closeSettings()">
+  <div class="modal" style="width:560px">
+    <button class="modal-close" onclick="closeSettings()" title="关闭">&#215;</button>
     <h3>&#9881; API 配置</h3>
 
     <div style="font-size:13px;font-weight:600;color:var(--accent);margin:16px 0 8px">对话 API <span id="stChatStatus"></span></div>
