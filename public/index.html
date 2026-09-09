@@ -175,6 +175,7 @@ body.view-chat #homePane { display:none; }
 .diary-list, .anniv-list { flex:1; overflow-y:auto; padding:12px 18px; }
 .diary-entry, .anniv-entry { background:var(--bg); border:1px solid var(--border); border-radius:12px; padding:12px; margin-bottom:10px; }
 .diary-entry.locked { opacity:.5; }
+.diary-entry .diary-lock { font-size:11px; color:var(--text2); margin-top:6px; }
 .diary-date, .anniv-type { font-size:12px; color:var(--accent); font-weight:600; }
 .diary-content { font-size:13px; line-height:1.7; margin-top:6px; white-space:pre-wrap; }
 .anniv-date { font-size:12px; color:var(--text2); margin-top:4px; }
@@ -464,10 +465,10 @@ async function loadCharacters() {
     div.onclick = () => selectCharacter(c, div);
     list.appendChild(div);
   });
-  if (characters.length > 0) selectCharacter(characters[0], list.firstChild);
+  if (characters.length > 0) selectCharacter(characters[0], list.firstChild, { autoSelect: true });
 }
 
-function selectCharacter(c, el) {
+function selectCharacter(c, el, opts = {}) {
   // 取消正在进行的 SSE 请求
   if (abortController) {
     abortController.abort();
@@ -510,7 +511,7 @@ function selectCharacter(c, el) {
   refreshState();
   loadChatHistory(uid, c.id);
   closeModal('charModal');
-  if (document.body.classList.contains('view-home') && window.innerWidth < 900) openChatView();
+  if (!opts.autoSelect && document.body.classList.contains('view-home') && window.innerWidth < 900) openChatView();
 }
 
 async function loadChatHistory(uid, characterId) {
@@ -804,7 +805,7 @@ function appendMsg(role, text, prefix, timeStr) {
   const prefixStr = prefix ? `<span style="font-size:11px;color:var(--accent);font-weight:600">${prefix}</span> ` : '';
 
   if (role === 'system') {
-    div.innerHTML = `<div class="bubble" style="background:var(--surface2);color:var(--text2);font-size:12px;align-self:center">${text}</div>`;
+    div.innerHTML = `<div class="bubble">${text}</div>`;
   } else if (role === 'photo') {
     const imgUrl = '/photos/' + encodeURIComponent(text);
     const captionHtml = prefix ? `<div class="photo-caption">${escapeHtml(prefix)}</div>` : '';
