@@ -191,4 +191,27 @@ export class MemoryService {
       await this._getOrInit(userId, characterId);
     }
   }
+
+  /**
+   * 删除某角色全部记忆（所有用户维度）：删磁盘文件 + 驱逐内存实例
+   * 文件名格式 <userId>__<characterId>.json（双下划线分隔，characterId 可含单下划线，endsWith 匹配安全）
+   * @param {string} characterId
+   * @returns {number} 删除的文件数
+   */
+  removeCharacter(characterId) {
+    const dir = path.resolve(process.cwd(), 'data', 'memory');
+    let removed = 0;
+    if (fs.existsSync(dir)) {
+      for (const f of fs.readdirSync(dir)) {
+        if (f.endsWith(`__${characterId}.json`)) {
+          fs.rmSync(path.join(dir, f), { force: true });
+          removed++;
+        }
+      }
+    }
+    for (const key of [...this._instances.keys()]) {
+      if (key.endsWith(`__${characterId}`)) this._instances.delete(key);
+    }
+    return removed;
+  }
 }
