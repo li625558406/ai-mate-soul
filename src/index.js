@@ -82,7 +82,7 @@ const planExtractor = new PlanExtractor({ llmProvider, db, provider: defaultProv
 
 const proactiveService = new ProactiveService({
   llmProvider, db, timeService, characterManager,
-  provider: defaultProvider,
+  provider: defaultProvider, emotionStateMachine,
 });
 
 const chatService = new ChatService({
@@ -175,6 +175,7 @@ if (httpsServer) {
 
 proactiveService.registerSocketIO(io);
 proactiveService.startProactiveTimer();
+proactiveService.startReconcileTimer();
 
 // ==================== 中间件 ====================
 
@@ -941,6 +942,7 @@ process.on('unhandledRejection', (reason) => {
 process.on('SIGINT', async () => {
   console.log('\n[Shutdown] 正在保存数据...');
   proactiveService.stopProactiveTimer();
+  proactiveService.stopReconcileTimer();
   await memoryService.closeAll();
   db.close();
   process.exit(0);

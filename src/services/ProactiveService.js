@@ -15,13 +15,14 @@ export class ProactiveService {
    * @param {import('./CharacterManager.js').CharacterManager} deps.characterManager
    * @param {string} deps.provider
    */
-  constructor({ llmProvider, db, timeService, characterManager, provider, imageService }) {
+  constructor({ llmProvider, db, timeService, characterManager, provider, imageService, emotionStateMachine }) {
     this.llmProvider = llmProvider;
     this.db = db;
     this.timeService = timeService;
     this.characterManager = characterManager;
     this.provider = provider;
     this.imageService = imageService || null;
+    this.emotionStateMachine = emotionStateMachine || null;
 
     /** @type {Map<string, { socket: object, userId: string, characterId: string }>} */
     this._connections = new Map();
@@ -30,6 +31,7 @@ export class ProactiveService {
     this._lastProactiveSent = new Map();    // "userId_characterId" → timestamp
     this._lastUserActivity = new Map();     // "userId_characterId" → timestamp
     this._proactiveTimer = null;
+    this._reconcileTimer = null;
 
     // 主动事件池（回归消息模板）
     this._eventTemplates = [
@@ -123,6 +125,77 @@ export class ProactiveService {
       });
     } catch {
       return null;
+    }
+  }
+
+  // ==================== 冷战到期主动和解 ====================
+
+  /** 启动冷战到期检查器（每分钟） */
+  startReconcileTimer() {
+    this._checkExpiredColdWars();
+    this._reconcileTimer = setInterval(() => this._checkExpiredColdWars(), 60 * 1000);
+  }
+
+  stopReconcileTimer() {
+    if (this._reconcileTimer) {
+      clearInterval(this._reconcileTimer);
+      this._reconcileTimer = null;
+    }
+  }
+
+  async _checkExpiredColdWars() {
+    if (!this.emotionStateMachine) return;
+    try {
+      const expired = this.db.getExpiredColdWars(new Date().toISOString());
+      for (const row of expired) {
+        try {
+          const character = this.characterManager.getCharacter(row.character_id);
+          if (!character) continue;
+
+          const message = await this._generateReconcileMessage({ character, reason: row.cold_war_reason });
+
+          const newMood = Math.min(0, (row.mood_level || 0) + 20);
+          const newState = this.emotionStateMachine._getStateForMood(newMood);
+          this.db.reconcileColdWar(row.user_id, row.character_id, newMood, newState);
+
+          // 无论在线与否都入库；在线则推送
+          this.db.saveChatMessage({
+            userId: row.user_id, characterId: row.character_id,
+            role: 'assistant', content: message,
+          });
+          this.pushNotification(row.user_id, row.character_id, 'proactive', {
+            characterId: row.character_id,
+            characterName: character.nickname || character.name,
+            message,
+          });
+          console.log(`[ProactiveService] 冷战到期和解推送 (${character.nickname || character.name}): ${message.slice(0, 40)}...`);
+        } catch (err) {
+          console.warn('[ProactiveService] 单个和解失败:', err.message);
+        }
+      }
+    } catch (err) {
+      console.warn('[ProactiveService] 和解检查失败:', err.message);
+    }
+  }
+
+  /**
+   * 生成冷战到期和解消息
+   */
+  async _generateReconcileMessage({ character, reason }) {
+    const name = character.nickname || character.name;
+    const systemPrompt = `你是「${name}」，${character.base_personality}。
+你们刚才因为「${reason || '一些矛盾'}」冷战，现在冷战时间到了，你其实不想真的闹僵。
+请生成一条主动和解的消息（1-2句话），要符合你的性格：可以带点别扭、嘴硬，但要传达出想和好的意思。
+直接输出消息内容，不要加引号。`;
+    try {
+      const msg = await this.llmProvider.chat(this.provider, {
+        systemPrompt,
+        messages: [{ role: 'user', content: '生成和解消息' }],
+        temperature: 0.9,
+      });
+      return msg || '...还生气吗？我不想跟你冷战。';
+    } catch {
+      return '...还生气吗？我不想跟你冷战。';
     }
   }
 
