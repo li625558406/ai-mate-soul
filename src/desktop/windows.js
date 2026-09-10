@@ -19,7 +19,7 @@ export function createMainWindow(rootDirArg) {
     width: 1280,
     height: 860,
     autoHideMenuBar: true,
-    icon: _rootDir ? path.join(_rootDir, 'public/icons/icon.svg') : undefined, // Task 2 换成生成的 icon.png
+    icon: _rootDir ? path.join(_rootDir, 'public/icons/icon.png') : undefined,
     webPreferences: { contextIsolation: true, nodeIntegration: false },
   });
   mainWindow.loadURL(HOME);

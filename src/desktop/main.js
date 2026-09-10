@@ -2,9 +2,9 @@
 import { app, session, dialog } from 'electron';
 import net from 'node:net';
 import { PORT, ROOT_DIR as ROOT } from './config.js';
-import { start as startService, stop as stopService, waitHealth, getLogTail } from './serviceManager.js';
+import { start as startService, stop as stopService, waitHealth, getLogTail, onState } from './serviceManager.js';
 import { createMainWindow, showMainWindow } from './windows.js';
-import { createTray } from './tray.js';
+import { createTray, showBalloon } from './tray.js';
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -51,4 +51,13 @@ async function boot() {
 
   createMainWindow(ROOT);
   createTray(ROOT);
+
+  // 后端子进程状态接线：崩溃重启走托盘气泡，连续失败弹错误框
+  onState((s) => {
+    if (s.state === 'failed') {
+      dialog.showErrorBox('后端服务启动失败', '子进程连续崩溃，日志尾部：\n\n' + (s.log || '(无日志)'));
+    } else if (s.state === 'restarting') {
+      showBalloon('服务重启中', `后端进程异常退出，${Math.round(s.delay / 1000)} 秒后自动重启（第 ${s.consecutiveFails} 次）`);
+    }
+  });
 }
