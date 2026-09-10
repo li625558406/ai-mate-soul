@@ -506,9 +506,9 @@ body.view-chat #homePane { display:none; }
       </div>
 
       <div class="api-card" style="border-left:4px solid #3cb878">
-        <div class="api-title">&#128266; TTS / 语音 API <span id="stTtsStatus"></span><button class="btn-cancel" style="margin-left:auto;padding:3px 10px;font-size:11px" onclick="testSettings('tts')">校验</button></div>
-        <div class="field"><label>Base URL</label><input type="text" id="stTtsUrl" placeholder="https://dashscope.aliyuncs.com" autocomplete="off"><div class="hint">语音专用地址，留空使用默认 DashScope；只填主机自动补路径</div></div>
-        <div class="field"><label>API Key</label><input type="password" id="stTtsKey" placeholder="sk-..." autocomplete="off"></div>
+        <div class="api-title">&#128266; TTS / 语音 API（火山豆包）<span id="stTtsStatus"></span><button class="btn-cancel" style="margin-left:auto;padding:3px 10px;font-size:11px" onclick="testSettings('tts')">校验</button></div>
+        <div class="field"><label>API Key</label><input type="password" id="stTtsKey" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off"><div class="hint">火山新版控制台（console.volcengine.com/speech/new）→ API Key 管理获取；TTS 与语音通话共用</div></div>
+        <div class="field"><label>Resource ID（高级）</label><input type="text" id="stTtsResourceId" placeholder="seed-tts-2.0" autocomplete="off"><div class="hint">留空使用默认 seed-tts-2.0</div></div>
       </div>
 
       <div class="api-card" style="border-left:4px solid #f39a4b">
@@ -1801,8 +1801,8 @@ async function openSettings() {
     document.getElementById('stImageUrl').value = s.image?.baseURL || '';
     document.getElementById('stImageKey').value = s.image?.apiKey || '';
     document.getElementById('stImageModel').value = s.image?.model || '';
-    document.getElementById('stTtsUrl').value = s.tts?.baseURL || '';
     document.getElementById('stTtsKey').value = s.tts?.apiKey || '';
+    document.getElementById('stTtsResourceId').value = s.tts?.resourceId || '';
     document.getElementById('stVideoUrl').value = s.video?.baseURL || '';
     document.getElementById('stVideoKey').value = s.video?.apiKey || '';
     document.getElementById('stVideoModel').value = s.video?.model || '';
@@ -1829,7 +1829,7 @@ async function testSettings(kind) {
   const sectionByKind = {
     chat:  { baseURL: sec('stChatUrl'),  apiKey: sec('stChatKey'),  model: sec('stChatModel') },
     image: { baseURL: sec('stImageUrl'), apiKey: sec('stImageKey'), model: sec('stImageModel') },
-    tts:   { baseURL: sec('stTtsUrl'),   apiKey: sec('stTtsKey') },
+    tts:   { apiKey: sec('stTtsKey'), resourceId: sec('stTtsResourceId') },
     video: { baseURL: sec('stVideoUrl'), apiKey: sec('stVideoKey'), model: sec('stVideoModel') },
   };
 
@@ -2392,8 +2392,8 @@ async function saveSettings() {
       model: document.getElementById('stImageModel').value.trim(),
     },
     tts: {
-      baseURL: document.getElementById('stTtsUrl').value.trim(),
       apiKey: document.getElementById('stTtsKey').value.trim(),
+      resourceId: document.getElementById('stTtsResourceId').value.trim(),
     },
     video: {
       baseURL: document.getElementById('stVideoUrl').value.trim(),
