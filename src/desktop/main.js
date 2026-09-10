@@ -2,7 +2,7 @@
 import { app, session, dialog } from 'electron';
 import net from 'node:net';
 import { PORT, ROOT_DIR as ROOT } from './config.js';
-import { start as startService, stop as stopService, onState, waitHealth } from './serviceManager.js';
+import { start as startService, stop as stopService, waitHealth } from './serviceManager.js';
 import { createMainWindow, showMainWindow } from './windows.js';
 import { createTray } from './tray.js';
 
