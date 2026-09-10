@@ -47,7 +47,7 @@ export class LLMProvider {
    * @param {{ systemPrompt: string, messages: Array<{role:string, content:string}> }} params
    * @returns {AsyncGenerator<string>}
    */
-  async *chatStream(providerName, { systemPrompt, messages }) {
+  async *chatStream(providerName, { systemPrompt, messages, maxTokens }) {
     const { client, model } = this._getProvider(providerName);
 
     const apiMessages = [
@@ -60,7 +60,7 @@ export class LLMProvider {
       messages: apiMessages,
       stream: true,
       temperature: 0.85,
-      max_tokens: 1024,
+      max_tokens: maxTokens || 1024,
     });
 
     for await (const chunk of stream) {

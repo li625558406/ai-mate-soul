@@ -305,12 +305,16 @@ export class ChatService {
       },
     };
 
-    // 11. 调用 LLM（内心独白模式：先完整接收，再解析 thought/reply，最后模拟流式输出 reply）
+    // 11. 调用 LLM（负情绪时硬压回复长度：生气话少才真实）
+    const replyMaxTokens = emotionResult.moodLevel < -50 ? 120
+      : emotionResult.moodLevel < -20 ? 200
+      : 1024;
     let rawFull = '';
     try {
       for await (const chunk of this.llmProvider.chatStream(usedProvider, {
         systemPrompt,
         messages: recentMessages,
+        maxTokens: replyMaxTokens,
       })) {
         rawFull += chunk;
       }
@@ -344,6 +348,20 @@ export class ChatService {
       .replace(/^[\s]*[""""'「『]+/, '')
       .replace(/[""""'」』]+[\s]*$/, '');
 
+    // 12.5 剥离控制标记（必须在流式输出之前，避免标记原文推给前端）
+    let photoTag = null;
+    const photoMatch = replyText.match(/\[发照片:(自拍|空镜|拼图|她拍)\]/);
+    if (photoMatch) {
+      photoTag = photoMatch[1];
+      replyText = replyText.replace(/\[发照片:[^\]]+\]/g, '').trim();
+    }
+    let busyTag = null;
+    const busyMatch = replyText.match(/\[去忙:([^:]+):(\d+)\]/);
+    if (busyMatch) {
+      busyTag = { activity: busyMatch[1], minutes: parseInt(busyMatch[2], 10) };
+      replyText = replyText.replace(/\[去忙:[^\]]+\]/g, '').trim();
+    }
+
     // 13. 模拟流式输出 reply（每 2-3 个字符一个 chunk）
     if (replyText) {
       const chunkSize = 2;
@@ -369,15 +387,12 @@ export class ChatService {
       });
     }
 
-    // 15. 检测是否需要发照片
-    const photoMatch = replyText.match(/\[发照片:(自拍|空镜|拼图|她拍)\]/);
+    // 15. 检测是否需要发照片（标记已在流式前剥离）
     let photoType = null;
-    if (photoMatch && this.imageService) {
-      const photoLabel = photoMatch[1];
-      photoType = { '空镜': 'activity', '拼图': 'selfie_grid', '她拍': 'portrait' }[photoLabel] || 'selfie';
-      console.log(`[ChatService] 检测到发照片标记: "${photoLabel}" → photoType=${photoType}`);
-      replyText = replyText.replace(/\[发照片:(自拍|空镜|拼图|她拍)\]/g, '').trim();
-    } else if (photoMatch && !this.imageService) {
+    if (photoTag && this.imageService) {
+      photoType = { '空镜': 'activity', '拼图': 'selfie_grid', '她拍': 'portrait' }[photoTag] || 'selfie';
+      console.log(`[ChatService] 检测到发照片标记: "${photoTag}" → photoType=${photoType}`);
+    } else if (photoTag && !this.imageService) {
       console.log(`[ChatService] 检测到发照片标记但 imageService 未初始化，跳过`);
     } else if (this.imageService) {
       // AI 语义判断：用上下文 + 时间 + 天气判断角色是否要发照片
@@ -449,14 +464,11 @@ photo_type 取值：
       }
     }
 
-    // 18. 检测忙碌标记 [去忙:活动:分钟数] 或 AI 语义判断
-    const busyMatch = replyText.match(/\[去忙:([^:]+):(\d+)\]/);
-    if (busyMatch) {
-      const busyActivity = busyMatch[1];
-      const busyMinutes = this._calcBusyDuration(busyActivity);
-      this.db.setBusyState(userId, characterId, busyActivity, busyMinutes);
-      replyText = replyText.replace(/\[去忙:[^\]]+\]/g, '').trim();
-      console.log(`[ChatService] 角色进入忙碌状态(标记): ${busyActivity}, ${busyMinutes}分钟`);
+    // 18. 忙碌标记（已在流式前剥离）或 AI 语义判断
+    if (busyTag) {
+      const busyMinutes = this._calcBusyDuration(busyTag.activity);
+      this.db.setBusyState(userId, characterId, busyTag.activity, busyMinutes);
+      console.log(`[ChatService] 角色进入忙碌状态(标记): ${busyTag.activity}, ${busyMinutes}分钟`);
     } else {
       // 把最近5条上下文交给 AI 判断是否需要进入忙碌状态
       try {
