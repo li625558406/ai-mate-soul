@@ -689,6 +689,15 @@ body.view-chat #homePane { display:none; }
 <!-- Image Lightbox -->
 <div class="lightbox" id="lightbox" onclick="closeLightbox()"><img id="lightboxImg" src="" alt=""></div>
 
+<!-- 断连遮罩：后端子进程崩溃/重启时全屏提示，重连成功后自动消失 -->
+<div id="connMask" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.6);
+     color:#fff;align-items:center;justify-content:center;font-size:15px;">
+  <div style="text-align:center;">
+    <div style="font-size:28px;margin-bottom:10px;">💢</div>
+    <div>连接已断开，正在重连…</div>
+  </div>
+</div>
+
 <script>
 const API = '';
 let currentCharacterId = null;
@@ -699,6 +708,11 @@ const XP_THRESHOLDS = [0, 100, 300, 600, 1000, 1500, 2200, 3000, 4000, 5500];
 
 // Socket.IO
 const socket = io();
+
+// 桌面端后端子进程崩溃/重启时给出全屏遮罩，恢复后自动消失
+const connMask = document.getElementById('connMask');
+socket.on('disconnect', () => { connMask.style.display = 'flex'; });
+socket.on('connect', () => { connMask.style.display = 'none'; });
 
 (async () => {
   await loadCharacters();
