@@ -1,34 +1,31 @@
 /**
  * VoiceCallService - 实时语音通话服务
  *
- * 使用阿里云 DashScope Qwen-Omni-Realtime (qwen3.5-omni-plus-realtime)
+ * 使用火山豆包实时语音 3.0（Seeduplex，全双工端到端 S2S）
  * 在单个 WebSocket 连接中集成 ASR + LLM + TTS
  *
- * 架构：浏览器 ←Socket.IO→ Node.js 后端 ←WebSocket→ DashScope
+ * 架构：浏览器 ←Socket.IO→ Node.js 后端 ←WebSocket→ 火山 openspeech
+ * 协议要点（官方接入必读）：
+ * - 纯 JSON 文本帧，session.model 固定 1.2.6.1
+ * - 输入 PCM 16k/int16 须按 20ms（640 字节）实时节奏转发，否则服务端报错
+ * - 停止发送音频须发 input_audio_mute.commit，恢复发 input_audio_unmute.commit
+ * - 挂断须先 session.close 并等确认，直接断开触发 ContextCanceled(55000001)
  */
 import WebSocket from 'ws';
+import { DEFAULT_SPEAKER } from './VoiceCatalog.js';
 
-const DASHSCOPE_REALTIME_URL = 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3-omni-flash-realtime';
+const VOLCANO_REALTIME_URL = 'wss://openspeech.bytedance.com/api/v3/duplex/realtime/dialogue';
+const VOLCANO_REALTIME_RESOURCE_ID = 'seeduplex_realtime_dialogue'; // 升级握手必须携带，缺失会被 403 拒绝
+const SEEDUPLEX_MODEL = '1.2.6.1';
+const PACER_INTERVAL_MS = 20;   // 协议要求的 20ms 转发节奏
+const PACER_CHUNK_BYTES = 640;  // 16k/int16 下 20ms 对应字节数
+const PACER_MAX_QUEUE = 48000;  // 队列积压上限（3 秒音频），超出丢最旧防延迟滚雪球
 
-// 角色 → 音色 + 语气指令（语音通话用 qwen3-omni-flash-realtime，音色与 TTS 一致）
-const CHARACTER_VOICE_CONFIG = {
-  reina_001: {
-    voice: 'Cherry',
-    instructions: '你是傲娇女生，说话带小脾气，偶尔毒舌但内心柔软。语速偏快，语调有起伏，带点小傲娇的尾音。开心时语调上扬，不高兴时说话变短变冷。',
-  },
-  miku_002: {
-    voice: 'Chelsie',
-    instructions: '你是活泼可爱的元气少女，说话充满活力，语速较快，语调上扬，经常带撒娇语气。开心时声音更甜更活泼，不高兴时声音变小嘟囔。',
-  },
-  yuki_003: {
-    voice: 'Maia',
-    instructions: '你是成熟知性的御姐，说话沉稳有磁性，语速适中，语调温柔但有力。偶尔带慵懒感。开心时语气更柔和，生气时语调压低变冷。',
-  },
-  lin_004: {
-    voice: 'Serena',
-    instructions: '你是温柔体贴的邻家姐姐，说话轻柔细腻，语速偏慢，语调温暖甜美。开心时声音更柔更甜，委屈时带点哽咽。',
-  },
-};
+// 角色音色：读角色档案 voice_preset，缺省回退默认音色（与 TTS 通道同一来源）
+function resolveSpeaker(characterManager, characterId) {
+  const c = characterManager.getCharacter(characterId);
+  return (c?.voice_preset && String(c.voice_preset).trim()) || DEFAULT_SPEAKER;
+}
 
 // 通话附加系统提示
 const CALL_SYSTEM_APPENDIX = `
@@ -81,15 +78,16 @@ export class VoiceCallService {
       return { success: false, error: `角色 ${characterId} 不存在` };
     }
 
-    const voiceConfig = CHARACTER_VOICE_CONFIG[characterId] || CHARACTER_VOICE_CONFIG.reina_001;
+    const speaker = resolveSpeaker(this._characterManager, characterId);
 
     // 构建系统提示词
-    const systemPrompt = this._buildSystemPrompt({ userId, characterId, character, voiceConfig });
+    const systemPrompt = this._buildSystemPrompt({ userId, characterId, character });
 
-    // 建立 DashScope WebSocket 连接
-    const ws = new WebSocket(DASHSCOPE_REALTIME_URL, {
+    // 建立火山 Seeduplex WebSocket 连接（X-Api-Key 鉴权同 TTS，另须带 X-Api-Resource-Id）
+    const ws = new WebSocket(VOLCANO_REALTIME_URL, {
       headers: {
-        'Authorization': `Bearer ${this._apiKey}`,
+        'X-Api-Key': this._apiKey,
+        'X-Api-Resource-Id': VOLCANO_REALTIME_RESOURCE_ID,
       },
     });
 
@@ -98,56 +96,58 @@ export class VoiceCallService {
       userId,
       characterId,
       character,
-      voiceConfig,
+      speaker,
       systemPrompt,
       startTime: Date.now(),
       currentUserTranscript: '',   // 当前用户语音转文字
       currentAiTranscript: '',     // 当前 AI 回复文本
       chatCount: 0,               // 通话中的对话轮数
       aiSpeaking: false,           // AI 正在说话（用于回声抑制）
+      sessionReady: false,         // 已收到 session.created，之后才转发音频
+      muted: false,                // 已向上游声明静音
+      pacerQueue: [],              // 待按 20ms 节奏转发的音频缓冲
+      pacerBytes: 0,               // 队列总字节数
+      pacerTimer: null,            // 节奏转发定时器
+      endEmitted: false,           // voice_call:ended 是否已发（防重复）
       socket: null,                // Socket.IO socket 引用（外部设置）
     };
 
     this._calls.set(socketId, callState);
 
     ws.on('open', () => {
-      console.log(`[VoiceCall] DashScope 连接已建立 (socketId: ${socketId}, 角色: ${character.full_name || character.nickname})`);
-      // 发送 session.update 配置
+      console.log(`[VoiceCall] 火山 Seeduplex 连接已建立 (socketId: ${socketId}, 角色: ${character.full_name || character.nickname}, 音色: ${speaker})`);
       ws.send(JSON.stringify({
-        event_id: `event_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        type: 'session.update',
+        type: 'session.create',
         session: {
-          modalities: ['text', 'audio'],
-          voice: voiceConfig.voice,
+          model: SEEDUPLEX_MODEL,
           instructions: systemPrompt,
-          input_audio_format: 'pcm',
-          output_audio_format: 'pcm',
-          input_audio_transcription: { model: 'gummy-realtime-v1' },
-          turn_detection: {
-            type: 'server_vad',
-            threshold: 0.5,
-            silence_duration_ms: 800,
+          audio: {
+            input: { format: { type: 'pcm', rate: 16000 } },
+            output: { format: { type: 'pcm', rate: 24000 }, speed: 0, loudness: 0, voice: speaker },
           },
         },
+        extension: { asr: {}, tts: {}, dialog: {} },
       }));
+      // 启动 20ms 节奏转发器（协议强制要求）
+      callState.pacerTimer = setInterval(() => this._pacerTick(socketId), PACER_INTERVAL_MS);
     });
 
     ws.on('message', (data) => {
       try {
         const event = JSON.parse(data.toString());
-        this._handleDashScopeEvent(socketId, event);
+        this._handleVolcanoEvent(socketId, event);
       } catch (err) {
-        console.error(`[VoiceCall] 解析 DashScope 事件失败:`, err.message);
+        console.error(`[VoiceCall] 解析火山事件失败:`, err.message);
       }
     });
 
     ws.on('close', (code, reason) => {
-      console.log(`[VoiceCall] DashScope 连接关闭 (code: ${code}, reason: ${reason || '无'})`);
+      console.log(`[VoiceCall] 火山连接关闭 (code: ${code}, reason: ${reason || '无'})`);
       this._cleanupCall(socketId);
     });
 
     ws.on('error', (err) => {
-      console.error(`[VoiceCall] DashScope WebSocket 错误:`, err.message);
+      console.error(`[VoiceCall] 火山 WebSocket 错误:`, err.message);
       if (callState.socket) {
         callState.socket.emit('voice_call:error', { error: err.message });
       }
@@ -163,11 +163,28 @@ export class VoiceCallService {
     const call = this._calls.get(socketId);
     if (!call) return;
 
-    if (call.ws && call.ws.readyState === WebSocket.OPEN) {
-      call.ws.close(1000, '用户挂断');
+    this._stopPacer(call);
+    // 先通知前端并标记结束（防止 _cleanupCall 重复发送）
+    if (call.socket && !call.endEmitted) {
+      call.endEmitted = true;
+      call.socket.emit('voice_call:ended', { duration: Math.round((Date.now() - call.startTime) / 1000) });
     }
+    // 协议要求：先发 session.close 并等服务端确认，直接断开会触发 ContextCanceled
+    if (call.ws && call.ws.readyState === WebSocket.OPEN) {
+      try { call.ws.send(JSON.stringify({ type: 'session.close' })); } catch { /* ok */ }
+    }
+    // 最多等 2 秒让 session.closed 下行/关闭事件触发 _cleanupCall，超时强制断开
+    setTimeout(() => {
+      try { if (call.ws && call.ws.readyState === WebSocket.OPEN) call.ws.close(1000, '用户挂断'); } catch { /* ok */ }
+      this._cleanupCall(socketId);
+    }, 2000);
+  }
 
-    this._cleanupCall(socketId);
+  /** 停止 20ms 节奏转发器并清空队列 */
+  _stopPacer(call) {
+    if (call.pacerTimer) { clearInterval(call.pacerTimer); call.pacerTimer = null; }
+    call.pacerQueue = [];
+    call.pacerBytes = 0;
   }
 
   /**
@@ -181,19 +198,52 @@ export class VoiceCallService {
   }
 
   /**
-   * 发送音频到 DashScope
+   * 发送音频到火山 Seeduplex
    */
   sendAudio(socketId, base64Chunk) {
     const call = this._calls.get(socketId);
     if (!call || !call.ws || call.ws.readyState !== WebSocket.OPEN) return;
-    // 回声抑制：AI 说话时不发送麦克风音频，防止扬声器声音被麦克风拾取后触发新回复
-    if (call.aiSpeaking) return;
+    if (!call.sessionReady) return; // 会话建立前不转发
 
-    call.ws.send(JSON.stringify({
-      event_id: `event_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      type: 'input_audio_buffer.append',
-      audio: base64Chunk,
-    }));
+    if (call.aiSpeaking) {
+      // 回声抑制：AI 说话时丢弃麦克风音频，但须向上游声明静音保持流存活
+      this._setMute(call, true);
+      return;
+    }
+    this._setMute(call, false);
+
+    // 入队，由 20ms 定时器按协议节奏匀速转发（前端分包节奏不受控）
+    const buf = Buffer.from(base64Chunk, 'base64');
+    if (!buf.length) return;
+    call.pacerQueue.push(buf);
+    call.pacerBytes += buf.length;
+    while (call.pacerBytes > PACER_MAX_QUEUE && call.pacerQueue.length > 1) {
+      call.pacerBytes -= call.pacerQueue.shift().length;
+    }
+  }
+
+  /** 每 20ms 取一帧（≤640 字节）按协议节奏转发 */
+  _pacerTick(socketId) {
+    const call = this._calls.get(socketId);
+    if (!call || !call.ws || call.ws.readyState !== WebSocket.OPEN) return;
+    if (call.muted) { call.pacerQueue = []; call.pacerBytes = 0; return; }
+    if (call.pacerBytes === 0) return;
+    const head = call.pacerQueue[0];
+    const piece = head.subarray(0, Math.min(PACER_CHUNK_BYTES, head.length));
+    call.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: piece.toString('base64') }));
+    call.pacerBytes -= piece.length;
+    const rest = head.subarray(piece.length);
+    if (rest.length === 0) call.pacerQueue.shift();
+    else call.pacerQueue[0] = rest;
+  }
+
+  /** 静音状态变化时向上游声明（协议要求：停发音频必须 mute.commit） */
+  _setMute(call, mute) {
+    if (mute === call.muted) return;
+    call.muted = mute;
+    if (call.ws && call.ws.readyState === WebSocket.OPEN) {
+      try { call.ws.send(JSON.stringify({ type: mute ? 'input_audio_mute.commit' : 'input_audio_unmute.commit' })); } catch { /* ok */ }
+    }
   }
 
   /**
@@ -204,9 +254,9 @@ export class VoiceCallService {
   }
 
   /**
-   * 构建 DashScope 系统提示词
+   * 构建火山 Seeduplex 系统提示词
    */
-  _buildSystemPrompt({ userId, characterId, character, voiceConfig }) {
+  _buildSystemPrompt({ userId, characterId, character }) {
     // 复用 DynamicPromptBuilder 构建与文字聊天相同的系统提示词
     this._db.ensureUser(userId);
     const state = this._db.ensureCharacterState(userId, characterId);
@@ -252,44 +302,41 @@ export class VoiceCallService {
   }
 
   /**
-   * 处理 DashScope WebSocket 事件
+   * 处理火山 Seeduplex WebSocket 事件
    */
-  _handleDashScopeEvent(socketId, event) {
+  _handleVolcanoEvent(socketId, event) {
     const call = this._calls.get(socketId);
     if (!call || !call.socket) return;
 
     const socket = call.socket;
     const type = event.type;
 
-    // 调试日志：记录所有 DashScope 事件类型
-    if (type !== 'response.audio.delta' && type !== 'response.audio_transcript.delta') {
-      console.log(`[VoiceCall] DashScope 事件: ${type}`, type === 'error' ? event : '');
+    // 调试日志：高频事件不打印
+    if (type !== 'response.output_audio.delta' && type !== 'conversation.item.input_audio_transcription.delta') {
+      console.log(`[VoiceCall] 火山事件: ${type}`, type === 'error' ? JSON.stringify(event).slice(0, 300) : '');
     }
 
     switch (type) {
       case 'session.created':
+        call.sessionReady = true;
         console.log(`[VoiceCall] 会话已创建 (sessionId: ${event.session?.id})`);
         socket.emit('voice_call:session_created', { sessionId: event.session?.id });
         break;
 
-      case 'session.updated':
-        console.log(`[VoiceCall] 会话配置已生效`);
-        break;
-
-      case 'response.audio.delta':
-        // AI 音频流片段 → 转发给前端
+      case 'response.output_audio.delta':
+        // AI 音频流片段（base64 PCM 24k）→ 转发给前端
         if (event.delta) {
           call.aiSpeaking = true;
           socket.emit('voice_call:audio', event.delta);
         }
         break;
 
-      case 'response.audio.done':
+      case 'response.output_audio.done':
         // AI 一段音频结束，延迟解除回声抑制（给扬声器余音时间消散）
         setTimeout(() => { call.aiSpeaking = false; }, 500);
         break;
 
-      case 'response.audio_transcript.delta':
+      case 'response.output_text.delta':
         // AI 文本实时字幕
         if (event.delta) {
           call.currentAiTranscript += event.delta;
@@ -297,7 +344,7 @@ export class VoiceCallService {
         }
         break;
 
-      case 'response.audio_transcript.done':
+      case 'response.output_text.done':
         // AI 完整回复文本 → 保存聊天记录并通知前端
         {
           const aiText = call.currentAiTranscript.trim();
@@ -323,13 +370,18 @@ export class VoiceCallService {
         }
         break;
 
+      case 'response.done':
+        // 一轮结束的用量统计（仅日志）
+        console.log(`[VoiceCall] 一轮结束 usage: ${JSON.stringify(event.usage || {}).slice(0, 200)}`);
+        break;
+
       case 'error':
-        console.error(`[VoiceCall] DashScope 错误:`, event.error?.message || event);
-        socket.emit('voice_call:error', { error: event.error?.message || '未知错误' });
+        console.error(`[VoiceCall] 火山错误:`, event.error?.message || event.message || JSON.stringify(event).slice(0, 200));
+        socket.emit('voice_call:error', { error: event.error?.message || event.message || '未知错误' });
         break;
 
       default:
-        // 忽略其他事件
+        // 忽略其他事件（session.updated / input_audio_buffer.committed / conversation.item.* 等）
         break;
     }
   }
@@ -412,7 +464,9 @@ export class VoiceCallService {
     const call = this._calls.get(socketId);
     if (!call) return;
 
-    if (call.socket) {
+    this._stopPacer(call);
+    if (call.socket && !call.endEmitted) {
+      call.endEmitted = true;
       call.socket.emit('voice_call:ended', { duration: Math.round((Date.now() - call.startTime) / 1000) });
     }
 
