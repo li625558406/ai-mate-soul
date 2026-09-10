@@ -1,5 +1,24 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-10 — 语音体系切换火山豆包（TTS + 实时通话 + 每角色音色）
+
+### 改动主题
+集成火山引擎豆包语音，文本转语音与实时对话语音全部替换阿里云 DashScope（不留双供应商），每个角色可在角色编辑器选择自己的音色，TTS 与实时通话两通道按角色配置统一发声。
+
+### 核心变更点
+1. **MultimodalService**：DashScope Qwen3-TTS → 火山单向流式 TTS（`POST /api/v3/tts/unidirectional`，seed-tts-2.0）；情绪/说话风格经 `context_texts` 指令遵循注入；chunked 多段 JSON 解析（括号配平，容忍半包/粘包/坏段）；错误码翻译（401/资源未开通 45000030/InvalidSpeaker）；火山成功结束帧 `code=20000000` 特判放行（实测发现，否则每次成功合成都被误判为错误）
+2. **VoiceCallService**：DashScope Qwen-Omni-Realtime → 火山 Seeduplex 全双工 S2S（`wss://openspeech.bytedance.com/api/v3/duplex/realtime/dialogue`）；鉴权须同时带 `X-Api-Key` 与 `X-Api-Resource-Id: seeduplex_realtime_dialogue`（实测得出，文档未写明）；20ms/640B 节奏转发器（协议强制，48KB 有界队列丢最旧）；AI 说话时静音声明（`input_audio_mute/unmute.commit`）；`session.close` 优雅挂断 + 2s 强断兜底；握手竞态守卫（open 晚于挂断时 terminate，防定时器泄漏与孤儿会话）；Socket.IO 事件协议不变，前端零改动
+3. **音色体系**：从代码硬编码（CHARACTER_VOICE_CONFIG）改为角色档案 `voice_preset` 字段（火山音色 ID，TTS 与实时通话通用，无配置回退 Vivi 2.0）；新增 `VoiceCatalog.js` 精选 20 个伴侣向音色，`GET /api/voices` 下发；内置 4 角色迁移：芊悦→傲娇女友、千雪→可爱女生、四月→成熟姐姐、苏瑶→温柔小雅（实测旧值含 Sunny/Katerina 一并迁移）
+4. **角色编辑器**：音色下拉 + 自定义音色 ID（声音复刻）+ 试听按钮；`POST /api/tts` 支持可选 `speaker` 覆盖（校验：非空字符串 ≤128）
+5. **设置页**：TTS 段改为火山 `apiKey` + `resourceId`（TTS 与通话共用 Key，留空 resourceId 回退默认）；`/api/settings/test` tts 校验改为火山探测（区分 401/资源未开通/可用）
+6. **验证状态**：TTS 真实合成已验证（HTTP 200 合法 mp3，581ms，音色读档案生效）；Seeduplex 握手已验证（session.created）；浏览器麦克风全链路通话待验证
+
+### 遗留事项
+- 实时语音通话的浏览器端全链路验证（麦克风→回复→挂断，需 HTTPS 页面）
+- 通话中火山下发致命错误（如资源类错误码）目前仅转发前端不自动挂断，联调时结合真实错误码决定是否自动结束
+- 存量问题（非本次引入）：`_saveCallMessage` 对 user 消息可能重复入库（顶部无条件存一次 + 情感分析分支再存一次），待后续单独修复
+- 设计文档：`docs/superpowers/specs/2026-09-10-volcengine-tts-design.md`；实施计划：`docs/superpowers/plans/2026-09-10-volcengine-tts.md`
+
 ## 2026-09-09 — 修复新增角色与 AI 生成的校验死锁
 
 ### 改动主题

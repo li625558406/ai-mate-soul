@@ -18,7 +18,7 @@ npm start            # 生产模式
 - 启动后访问 `http://localhost:3000`；HTTPS `https://localhost:3443`（自签证书自动生成，手机麦克风权限需要 HTTPS）。
 - 对话/绘图/TTS/视频的 API 配置通过 **Web 设置页**（`public/index.html` 设置弹窗 → `PUT /api/settings`）管理，持久化在 `data/settings.json`（唯一配置源，与 `.env` 无关，启动不做 env 校验，未配置仅告警不退出）。
 - `.env` 仅 `PORT` / `HTTPS_PORT` 仍生效。
-- 项目迭代记录见 [CHANGE.md](./CHANGE.md)（按日期追加需求与整改条目）。
+- 项目迭代记录见 [CHANGE.md](./CHANGE.md)（按日期追加需求与整改条目）（当前迭代：语音体系已切换火山豆包——TTS+实时通话+每角色可选音色）。
 
 ## 架构
 
@@ -52,7 +52,7 @@ npm start            # 生产模式
 - 角色支持 Web 端可视化管理（`public/index.html` 角色管理弹窗：编辑/换图/新增复制/重置运行时状态/彻底删除），写 API 走 `CharacterManager`，运行时数据清理由 `DatabaseManager`/`MemoryService` 承担
 - `data/` 整体被 gitignore（数据库、角色数据、生成照片均为运行时数据）
 - 备份导出为 AES-256-GCM 加密的 `.soul` 文件（SecurityService）
-- 外部集成：阿里云 DashScope（TTS Qwen3-TTS、实时语音通话 Qwen-Omni-Realtime WebSocket、绘图 Wanx）、火山方舟 Ark（视频生成 Seedance，`VideoService` 异步任务制：创建任务 → 后台轮询 → mp4 存 `public/videos/`，复用 photos 表 `type='video'`），天气用 wttr.in（免费无 key）
+- 外部集成：火山豆包语音（TTS 走 `MultimodalService` 单向流式 HTTP seed-tts-2.0、实时语音通话走 `VoiceCallService` Seeduplex WebSocket，音色存角色档案 `voice_preset` 字段、两通道通用、`VoiceCatalog.js` 为精选清单唯一源）、阿里云 DashScope（绘图 Wanx）、火山方舟 Ark（视频生成 Seedance，`VideoService` 异步任务制：创建任务 → 后台轮询 → mp4 存 `public/videos/`，复用 photos 表 `type='video'`），天气用 wttr.in（免费无 key）
 
 ## 约定
 
