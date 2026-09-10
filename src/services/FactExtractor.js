@@ -43,7 +43,7 @@ export class FactExtractor {
     const systemPrompt = `你是一个信息提取助手。分析以下对话，提取关于"用户"的个人事实信息。
 
 只提取明确提及的信息，不要推测。返回 JSON 数组格式，每个元素包含：
-- key: 事实类别（英文，如 hometown, birthday, pet_name, job, liked_food, hated_food, hobby, mood, relationship_status, dream 等）
+- key: 事实类别（用简体中文，如 家乡、生日、宠物昵称、工作、喜欢的食物、讨厌的食物、爱好、心情、感情状态、梦想 等，禁止输出英文类别）
 - value: 事实内容的纯净值（不要包含"我叫"、"我老家是"、"我最讨厌"等主语前缀。例如："小明"、"成都"、"香菜"）
 - confidence: 确信度 0-1
 

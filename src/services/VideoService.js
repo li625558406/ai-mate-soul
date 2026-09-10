@@ -19,10 +19,11 @@ const POLL_MAX_MS = 10 * 60 * 1000;
  * 状态查询走 GET /api/video/status/:taskId，前端轮询展示进度。
  */
 export class VideoService {
-  constructor({ apiKey, baseURL, model, db, characterManager }) {
+  constructor({ apiKey, baseURL, model, maxDuration, db, characterManager }) {
     this._apiKey = apiKey || '';
     this._baseURL = baseURL || DEFAULT_BASE_URL;
     this._model = model || DEFAULT_MODEL;
+    this._maxDuration = this._normalizeDuration(maxDuration);
     this._db = db;
     this._characterManager = characterManager;
 
@@ -36,14 +37,27 @@ export class VideoService {
   }
 
   /** 运行时刷新配置（设置保存后立即生效） */
-  updateConfig({ apiKey, baseURL, model }) {
+  updateConfig({ apiKey, baseURL, model, maxDuration }) {
     if (apiKey) this._apiKey = apiKey;
     if (baseURL) this._baseURL = baseURL;
     if (model) this._model = model;
+    if (maxDuration !== undefined) this._maxDuration = this._normalizeDuration(maxDuration);
   }
 
   isConfigured() {
     return !!this._apiKey;
+  }
+
+  /** 时长配置合法性归一：非数字/负数回退 5 秒 */
+  _normalizeDuration(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) return 5;
+    return Math.floor(n);
+  }
+
+  /** 当前模型的时长上限（秒）：2.5 系列模型 30s，其他 15s */
+  _durationCap() {
+    return /2[-.]5/.test(this._model) ? 30 : 15;
   }
 
   /**
@@ -51,7 +65,7 @@ export class VideoService {
    * @param {string} userId
    * @param {string} characterId
    * @param {object} opts - { prompt?: string, type?: string, caption?: string }
-   * @returns {{ taskId: string }}
+   * @returns {{ taskId: string, duration: number, truncated: boolean, cap: number }}
    */
   createTask(userId, characterId, opts = {}) {
     if (!this.isConfigured()) {
@@ -64,6 +78,11 @@ export class VideoService {
     // prompt：外部指定优先，否则基于角色档案 + 视频镜头描述生成
     const prompt = opts.prompt || this._buildDefaultPrompt(character);
     const caption = opts.caption || this._generateCaption(character);
+
+    // 时长：配置值超出当前模型上限时按上限截断
+    const cap = this._durationCap();
+    const duration = Math.min(this._maxDuration, cap);
+    const truncated = this._maxDuration > cap;
 
     // 首帧参考图：保证角色外貌一致性
     const content = [];
@@ -78,7 +97,7 @@ export class VideoService {
       });
       console.log(`[VideoService] 使用角色参考图作为首帧: ${path.basename(refImagePath)}`);
     }
-    content.push({ type: 'text', text: `${prompt} --wm false --dur 5` });
+    content.push({ type: 'text', text: `${prompt} --wm false --dur ${duration}` });
 
     const taskId = this._createArkTask(content);
     this._tasks.set(taskId, {
@@ -97,8 +116,8 @@ export class VideoService {
       console.error(`[VideoService] 任务 ${taskId} 轮询异常:`, err.message);
     });
 
-    console.log(`[VideoService] 任务已创建: taskId=${taskId}, character=${character.full_name}`);
-    return { taskId };
+    console.log(`[VideoService] 任务已创建: taskId=${taskId}, character=${character.full_name}, duration=${duration}s${truncated ? `（配置 ${this._maxDuration}s 超出模型上限 ${cap}s，已截断）` : ''}`);
+    return { taskId, duration, truncated, cap };
   }
 
   /** 查询任务状态 */

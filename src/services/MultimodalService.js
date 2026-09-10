@@ -7,9 +7,9 @@
  * 非流式模式：API 返回音频 URL → 下载音频 → 返回 Buffer
  */
 export class MultimodalService {
-  constructor({ apiKey }) {
+  constructor({ apiKey, baseURL }) {
     this._apiKey = apiKey;
-    this._baseUrl = 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation';
+    this._baseUrl = this._normalizeBaseURL(baseURL);
     this._model = 'qwen3-tts-instruct-flash';
 
     // 角色 → 音色 + 基础情感指令
@@ -45,6 +45,20 @@ export class MultimodalService {
       angry: '语气带刺，语调压低，语速变慢但每个字都带着怒气，像在压着火说话',
       cold_war: '极度冷淡，惜字如金，语调平直没有感情，像在敷衍不想搭理的人',
     };
+  }
+
+  /** Base URL 归一：留空走默认；只填主机则自动补 DashScope API 路径 */
+  _normalizeBaseURL(url) {
+    const DEFAULT = 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation';
+    if (!url) return DEFAULT;
+    const u = String(url).trim().replace(/\/+$/, '');
+    return /\/api\//.test(u) ? u : `${u}/api/v1/services/aigc/multimodal-generation/generation`;
+  }
+
+  /** 运行时刷新配置（设置保存后立即生效） */
+  updateConfig({ apiKey, baseURL }) {
+    if (apiKey) this._apiKey = apiKey;
+    if (baseURL !== undefined) this._baseUrl = this._normalizeBaseURL(baseURL);
   }
 
   /**

@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
+import fs from 'fs';
 import multer from 'multer';
 import { createServer as createHttpServer } from 'http';
 import { createServer as createHttpsServer } from 'https';
@@ -63,7 +64,7 @@ const timeService = new TimeService(llmProvider, defaultProvider);
 const growthService = new GrowthService();
 const emotionStateMachine = new EmotionStateMachine();
 const environmentService = new EnvironmentService();
-const multimodalService = new MultimodalService({ apiKey: settings.tts.apiKey });
+const multimodalService = new MultimodalService({ apiKey: settings.tts.apiKey, baseURL: settings.tts.baseURL });
 
 const diaryService = new DiaryService({ llmProvider, db, characterManager, provider: defaultProvider });
 const lifecycleService = new LifecycleService();
@@ -107,6 +108,8 @@ const voiceCallService = new VoiceCallService({
 
 const imageService = new ImageService({
   apiKey: settings.image.apiKey,
+  baseURL: settings.image.baseURL,
+  model: settings.image.model,
   db,
   characterManager,
   timeService,
@@ -121,6 +124,7 @@ const videoService = new VideoService({
   apiKey: settings.video.apiKey,
   baseURL: settings.video.baseURL,
   model: settings.video.model,
+  maxDuration: settings.video.maxDuration,
   db,
   characterManager,
 });
@@ -204,6 +208,14 @@ app.get('/api/characters/:characterId/reference', (req, res) => {
   res.sendFile(path.resolve(imgPath));
 });
 
+// 头像（仅展示用）：优先 avatar.*，未上传时回退参考图，避免界面空白
+app.get('/api/characters/:characterId/avatar', (req, res) => {
+  const imgPath = characterManager.getAvatarPath(req.params.characterId)
+    || characterManager.getReferenceImagePath(req.params.characterId);
+  if (!imgPath) return res.status(404).json({ error: '角色头像不存在' });
+  res.sendFile(path.resolve(imgPath));
+});
+
 // ==================== 角色管理（写操作） ====================
 
 // 新增角色（可复制现有）
@@ -238,25 +250,123 @@ app.put('/api/characters/:characterId', (req, res) => {
   }
 });
 
-// 更换角色参考图（魔数校验类型：jpg/png/webp）
-app.post('/api/characters/:characterId/avatar', avatarUpload.single('avatar'), (req, res) => {
+// 魔数校验图片类型（不信任扩展名）：返回 'jpg' | 'png' | 'webp' | null
+function detectImageExt(buf) {
+  if (buf.length > 3 && buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) return 'jpg';
+  if (buf.length > 4 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) return 'png';
+  if (buf.length > 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return 'webp';
+  return null;
+}
+
+// 角色图片上传（kind: avatar 头像 / reference 参考图）
+const KIND_LABEL = { avatar: '头像', reference: '参考图' };
+function handleCharacterImageUpload(kind) {
+  return (req, res) => {
+    const { characterId } = req.params;
+    if (!characterManager.hasCharacter(characterId)) return res.status(404).json({ error: '角色不存在' });
+    if (!req.file) return res.status(400).json({ error: '未收到图片文件' });
+    const ext = detectImageExt(req.file.buffer);
+    if (!ext) return res.status(400).json({ error: '仅支持 jpg / png / webp 图片' });
+    try {
+      const result = kind === 'avatar'
+        ? characterManager.saveAvatar(characterId, req.file.buffer, ext)
+        : characterManager.saveReference(characterId, req.file.buffer, ext);
+      if (!result.ok) return res.status(400).json({ error: result.error });
+      res.json({ success: true });
+    } catch (err) {
+      console.warn(`[CharMgr] ${kind} 保存失败:`, err.message);
+      res.status(500).json({ error: `${KIND_LABEL[kind]}保存失败: ` + err.message });
+    }
+  };
+}
+
+// 头像上传（仅 UI 展示：首页/聊天页/编辑页，不参与生成）
+app.post('/api/characters/:characterId/avatar', avatarUpload.single('avatar'), handleCharacterImageUpload('avatar'));
+// 参考图上传（生成自拍图/视频时作为一致性参考引入）
+app.post('/api/characters/:characterId/reference', avatarUpload.single('reference'), handleCharacterImageUpload('reference'));
+
+// ==================== AI 生成形象图片 ====================
+
+// 参考图固定模板（三视图 + 表情表）
+const REFERENCE_TEMPLATE = '整体是一张干净白色背景上的角色设定图，采用清晰的图解式排版，像官方设定指南页面。画面中包含角色的正面、侧面、背面三视图，比例准确，姿态自然，服装结构统一。旁边加入3到5个表情变化，包括平静、警觉、愤怒、微笑、受伤或沉思等状态。加入服装与装备拆解区：展示角色的外套、腰带、武器、鞋靴、背包、饰品、特殊道具或机械部件，并用细线标注结构细节。加入局部放大图，例如衣料纹理、徽章图案、武器机关、手套细节、护甲接口等。右下角加入角色配色板，包含5到7个色块，并标注主色、辅助色、金属色、皮肤色、发色、强调色。页面下方加入一小段世界观说明，像官方设定集中的角色档案文字，简短但有叙事感。整体视觉风格：高分辨率概念艺术，专业角色设计稿，干净白底，信息排版清晰，细节丰富但不杂乱，线稿精致，色彩统一，官方设定集质感，游戏美术设定页，动画制作设定稿，角色三视图，装备拆解图，表情设定，世界观注释。避免：杂乱背景、低清晰度、比例错误、三视图不一致、多余人物、过度装饰、文字乱码、廉价卡通感、AI拼贴感。';
+// 头像固定模板（不向前端展示）
+const AVATAR_TEMPLATE = 'Character portrait avatar, head and shoulders front view, centered composition, clean simple background, friendly expression, high quality official profile picture. No accessories, no props.';
+
+// AI 生成形象图片（预览，不落盘；采用走 adopt-image）
+app.post('/api/characters/:characterId/generate-image', async (req, res) => {
   const { characterId } = req.params;
   if (!characterManager.hasCharacter(characterId)) return res.status(404).json({ error: '角色不存在' });
-  if (!req.file) return res.status(400).json({ error: '未收到图片文件' });
-  const buf = req.file.buffer;
-  let ext = null;
-  if (buf.length > 3 && buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) ext = 'jpg';
-  else if (buf.length > 4 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) ext = 'png';
-  else if (buf.length > 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') ext = 'webp';
-  if (!ext) return res.status(400).json({ error: '仅支持 jpg / png / webp 图片' });
+  const { kind, stylePrompt, requirement, attachment } = req.body || {};
+  if (kind !== 'avatar' && kind !== 'reference') return res.status(400).json({ error: 'kind 必须为 avatar 或 reference' });
+  if (attachment !== undefined && attachment !== null && !(typeof attachment === 'string' && /^data:image\/(png|jpeg|webp);base64,/.test(attachment))) {
+    return res.status(400).json({ error: '附件仅支持 jpg / png / webp 图片' });
+  }
+  // base64 后体积膨胀约 1.37 倍，7.5MB 约对应原图 5MB
+  if (typeof attachment === 'string' && attachment.length > 7_500_000) {
+    return res.status(400).json({ error: '附件图片不能超过 5MB' });
+  }
+  const reqText = typeof requirement === 'string' ? requirement.trim().slice(0, 500) : '';
+  const style = typeof stylePrompt === 'string' ? stylePrompt.trim().slice(0, 1500) : '';
+  const parts = [kind === 'avatar' ? AVATAR_TEMPLATE : REFERENCE_TEMPLATE];
+  // 头像生成：固定提示词 + 必须以参考图为输入（风格/要求不参与）；未传附件时自动取角色已保存的参考图
+  let refInput = attachment || null;
+  if (kind === 'avatar') {
+    const refPath = characterManager.getReferenceImagePath(characterId);
+    if (!refPath && !refInput) return res.status(400).json({ error: '生成头像前请先上传或生成参考图' });
+    if (!refInput) {
+      const buf = fs.readFileSync(refPath);
+      const ext = detectImageExt(buf);
+      if (!ext) return res.status(400).json({ error: '参考图文件无效，请重新上传' });
+      refInput = `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${buf.toString('base64')}`;
+    }
+  } else {
+    if (style) parts.push(style);
+    if (reqText) parts.push(reqText);
+  }
   try {
-    const result = characterManager.saveAvatar(characterId, buf, ext);
+    let image = await imageService.generateImage(parts.join('. '), refInput);
+    if (!image) return res.status(500).json({ error: '生成失败：绘图服务未返回图片，请检查绘图 API 配置' });
+    // 生成结果是远程 URL 时下载为 dataURL，方便前端预览与采用
+    if (/^https?:\/\//.test(image)) {
+      const r = await fetch(image, { signal: AbortSignal.timeout(30000) });
+      if (!r.ok) throw new Error(`下载生成结果失败 (${r.status})`);
+      const buf = Buffer.from(await r.arrayBuffer());
+      const ext = detectImageExt(buf);
+      if (!ext) throw new Error('生成结果不是有效图片');
+      image = `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${buf.toString('base64')}`;
+    }
+    res.json({ success: true, image });
+  } catch (err) {
+    console.warn('[CharMgr] AI 生成形象失败:', err.message);
+    res.status(500).json({ error: '生成失败: ' + err.message });
+  }
+});
+
+// 采用生成的图片落盘（覆盖对应图片）
+app.post('/api/characters/:characterId/adopt-image', (req, res) => {
+  const { characterId } = req.params;
+  if (!characterManager.hasCharacter(characterId)) return res.status(404).json({ error: '角色不存在' });
+  const { kind, image } = req.body || {};
+  if (kind !== 'avatar' && kind !== 'reference') return res.status(400).json({ error: 'kind 必须为 avatar 或 reference' });
+  const m = typeof image === 'string' ? /^data:image\/(png|jpeg|webp);base64,(.+)$/.exec(image) : null;
+  if (!m || !m[2]) return res.status(400).json({ error: '图片数据无效' });
+  const buf = Buffer.from(m[2], 'base64');
+  if (!detectImageExt(buf)) return res.status(400).json({ error: '图片数据无效' });
+  try {
+    const result = kind === 'avatar'
+      ? characterManager.saveAvatar(characterId, buf, m[1] === 'png' ? 'png' : m[1] === 'webp' ? 'webp' : 'jpg')
+      : characterManager.saveReference(characterId, buf, m[1] === 'png' ? 'png' : m[1] === 'webp' ? 'webp' : 'jpg');
     if (!result.ok) return res.status(400).json({ error: result.error });
     res.json({ success: true });
   } catch (err) {
-    console.warn('[CharMgr] 头像保存失败:', err.message);
-    res.status(500).json({ error: '头像保存失败: ' + err.message });
+    console.warn('[CharMgr] 采用形象图片失败:', err.message);
+    res.status(500).json({ error: '保存失败: ' + err.message });
   }
+});
+// multer 超限默认落 500，这里映射为 413
+app.use((err, _req, res, next) => {
+  if (err && err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: '图片不能超过 5MB' });
+  next(err);
 });
 
 // 重置运行时状态（档案 JSON 不动）
@@ -437,8 +547,8 @@ app.post('/api/video', (req, res) => {
   if (!characterManager.hasCharacter(characterId)) return res.status(404).json({ error: `角色 ${characterId} 不存在` });
 
   try {
-    const { taskId } = videoService.createTask(userId, characterId, { prompt });
-    res.json({ success: true, taskId });
+    const { taskId, duration, truncated, cap } = videoService.createTask(userId, characterId, { prompt });
+    res.json({ success: true, taskId, duration, truncated, cap });
   } catch (err) {
     res.status(500).json({ error: `视频任务创建失败: ${err.message}` });
   }
@@ -475,8 +585,13 @@ app.get('/api/diaries/:userId/:characterId', (req, res) => {
 
 app.post('/api/diaries/generate/:userId/:characterId', async (req, res) => {
   const { userId, characterId } = req.params;
-  const result = await diaryService.generateDailyDiary({ userId, characterId });
-  res.json(result);
+  try {
+    const result = await diaryService.generateDailyDiary({ userId, characterId });
+    res.json(result);
+  } catch (err) {
+    console.warn(`[DiaryService] 手动生成日记失败: ${err.message}`);
+    res.status(500).json({ success: false, error: `日记生成失败: ${err.message}` });
+  }
 });
 
 // --- Anniversaries ---
@@ -641,15 +756,96 @@ app.put('/api/settings', (req, res) => {
   }
 
   // Reload service API keys
-  if (raw.image.apiKey) imageService._apiKey = raw.image.apiKey;
-  videoService.updateConfig({ apiKey: raw.video.apiKey, baseURL: raw.video.baseURL, model: raw.video.model });
+  imageService.updateConfig({ apiKey: raw.image.apiKey, baseURL: raw.image.baseURL, model: raw.image.model });
+  videoService.updateConfig({ apiKey: raw.video.apiKey, baseURL: raw.video.baseURL, model: raw.video.model, maxDuration: raw.video.maxDuration });
+  multimodalService.updateConfig({ apiKey: raw.tts.apiKey, baseURL: raw.tts.baseURL });
   if (raw.tts.apiKey) {
-    multimodalService._apiKey = raw.tts.apiKey;
     voiceCallService._apiKey = raw.tts.apiKey;
   }
 
   console.log(`[Settings] 配置已更新: chat=${raw.chat.baseURL} model=${raw.chat.model}`);
   res.json({ success: true, settings: updated });
+});
+
+// 校验某一类 API 配置有效性（前端设置弹窗「校验」按钮）
+// body: { kind: 'chat'|'image'|'tts'|'video', section: { baseURL?, apiKey?, model? } }
+// section.apiKey 若为掩码（****开头）则回退用已存储的真实 Key
+app.post('/api/settings/test', async (req, res) => {
+  const { kind, section = {} } = req.body || {};
+  const raw = settingsManager.getRaw();
+  const stored = raw[kind];
+  if (!stored) return res.status(400).json({ ok: false, message: `未知配置类型: ${kind}` });
+
+  const apiKey = (section.apiKey && !section.apiKey.startsWith('****')) ? section.apiKey.trim() : (stored.apiKey || '');
+  const baseURL = (section.baseURL || stored.baseURL || '').trim().replace(/\/+$/, '');
+  const model = (section.model || stored.model || '').trim();
+  if (!apiKey) return res.json({ ok: false, message: 'API Key 未配置' });
+
+  const TTS_URL = 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation';
+  // DashScope 的 Base URL 只填主机（如 https://dashscope.aliyuncs.com）时，自动补全 API 路径
+  const dashscopeUrl = (base, fallback) => {
+    if (!base) return fallback;
+    return /\/api\//.test(base) ? base : `${base}/api/v1/services/aigc/multimodal-generation/generation`;
+  };
+  try {
+    if (kind === 'chat') {
+      if (!baseURL) return res.json({ ok: false, message: 'Base URL 未配置' });
+      const r = await fetch(`${baseURL}/models`, { headers: { 'Authorization': `Bearer ${apiKey}` } });
+      if (r.ok) return res.json({ ok: true, message: '连接成功，Key 有效' });
+      if (r.status === 401 || r.status === 403) {
+        return res.json({ ok: false, message: `鉴权失败 HTTP ${r.status}，Key 无效` });
+      }
+      if (r.status === 404 || r.status === 405) {
+        // 网关未实现 /models（如火山方舟）：回退用最小对话请求验证
+        const r2 = await fetch(`${baseURL}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: model || undefined, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 }),
+        });
+        if (r2.ok) return res.json({ ok: true, message: '连接成功，Key 有效' });
+        const body = await r2.text().catch(() => '');
+        return res.json({ ok: false, message: `HTTP ${r2.status}: ${body.slice(0, 120)}` });
+      }
+      return res.json({ ok: false, message: `HTTP ${r.status}: ${(await r.text()).slice(0, 120)}` });
+    }
+
+    if (kind === 'image') {
+      // 双协议（火山方舟 Ark / DashScope）自动识别与真实校验都封装在 ImageService
+      return res.json(await imageService.probe({ apiKey, baseURL, model }));
+    }
+
+    if (kind === 'tts') {
+      const r = await fetch(dashscopeUrl(baseURL, TTS_URL), {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'qwen3-tts-instruct-flash',
+          input: { text: '你好', voice: 'Cherry', language_type: 'Chinese' },
+        }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) return res.json({ ok: false, message: `HTTP ${r.status}: ${JSON.stringify(data).slice(0, 120)}` });
+      return data?.output?.audio?.url
+        ? res.json({ ok: true, message: 'Key 有效，测试语音合成成功' })
+        : res.json({ ok: false, message: `响应异常: ${JSON.stringify(data).slice(0, 120)}` });
+    }
+
+    if (kind === 'video') {
+      if (!baseURL) return res.json({ ok: false, message: 'Base URL 未配置' });
+      // 零成本探测：用不存在的任务 id 查询，鉴权失败返回 401/403，Key 有效返回 404
+      const r = await fetch(`${baseURL}/content_generation/tasks/settings-validate-nonexistent`, {
+        headers: { 'Authorization': `Bearer ${apiKey}` },
+      });
+      if (r.status === 401 || r.status === 403) {
+        return res.json({ ok: false, message: `鉴权失败 HTTP ${r.status}，Key 无效` });
+      }
+      return res.json({ ok: true, message: 'Key 有效（鉴权通过）' });
+    }
+
+    return res.json({ ok: false, message: `未知配置类型: ${kind}` });
+  } catch (err) {
+    return res.json({ ok: false, message: `请求失败: ${err.message}` });
+  }
 });
 
 // ==================== 定时任务 ====================
@@ -672,7 +868,11 @@ function scheduleOvernightTasks() {
   console.log(`[DailyPlanner] 下次日程生成: ${nextSchedule.toLocaleString('zh-CN')} (${Math.round(scheduleDelay / 60000)}min 后)`);
 
   setTimeout(async () => {
-    await dailyPlanner.generateForAllActivePairs();
+    try {
+      await dailyPlanner.generateForAllActivePairs();
+    } catch (err) {
+      console.warn(`[DailyPlanner] 定时日程生成失败: ${err.message}`);
+    }
   }, scheduleDelay);
 
   // 日记生成：2:00
@@ -684,8 +884,12 @@ function scheduleOvernightTasks() {
   console.log(`[DiaryService] 下次日记生成: ${nextDiary.toLocaleString('zh-CN')} (${Math.round(diaryDelay / 60000)}min 后)`);
 
   setTimeout(async () => {
-    await diaryService.checkAndGenerateAll();
-    // 递归调度下一天
+    try {
+      await diaryService.checkAndGenerateAll();
+    } catch (err) {
+      console.warn(`[DiaryService] 定时日记生成失败: ${err.message}`);
+    }
+    // 递归调度下一天（即使本次失败也必须重新挂载，否则定时任务永久停摆）
     scheduleOvernightTasks();
   }, diaryDelay);
 }
@@ -699,13 +903,25 @@ dailyPlanner.generateForAllActivePairs().catch(err =>
 
 // 每 30 分钟处理一次情绪事件（烦躁值随日程事件变化）
 setInterval(() => {
-  dailyPlanner.processEventEmotions();
+  try {
+    dailyPlanner.processEventEmotions();
+  } catch (err) {
+    console.warn(`[DailyPlanner] 情绪事件处理失败: ${err.message}`);
+  }
 }, 30 * 60 * 1000);
 
 // 启动时立即处理一次（防止重启后遗漏事件）
 setTimeout(() => dailyPlanner.processEventEmotions(), 5000);
 
 // ==================== 优雅退出 ====================
+
+// 全局兜底：未处理的 Promise rejection 不允许击穿进程。
+// （Node >= 15 默认直接 crash；dev 模式 node --watch 会拉起进程，重启窗口期内
+//   所有前端请求表现为 "Failed to fetch"，即「偶现加载角色列表失败」的根因。
+//   此处仅告警降级，各后台任务自身已就地 catch，这里是最后一道防线。）
+process.on('unhandledRejection', (reason) => {
+  console.warn(`[WARN] 未处理的 Promise rejection: ${reason?.stack || reason}`);
+});
 
 process.on('SIGINT', async () => {
   console.log('\n[Shutdown] 正在保存数据...');
@@ -719,7 +935,7 @@ process.on('SIGINT', async () => {
 
 const PORT = process.env.PORT || 3000;
 
-httpServer.listen(PORT, () => {
+const onHttpListening = () => {
   console.log(`\n========================================`);
   console.log(`  AI Mate Soul v4 - 终极沉浸版`);
   console.log(`  http://localhost:${PORT}`);
@@ -753,4 +969,26 @@ httpServer.listen(PORT, () => {
   console.log(`  日程规划: 每日 ${SCHEDULE_CRON_HOUR}:${String(SCHEDULE_CRON_MINUTE).padStart(2, '0')}`);
   console.log(`  日记定时: 每日 ${DIARY_CRON_HOUR}:${String(DIARY_CRON_MINUTE).padStart(2, '0')}`);
   console.log(`========================================\n`);
-});
+};
+
+const listenHttp = (attempt = 0) => {
+  httpServer.once('error', (err) => {
+    if (err.code === 'EADDRINUSE' && attempt < 10) {
+      // node --watch 快速重启时旧进程可能尚未释放端口，重试而不是崩溃退出
+      console.warn(`[WARN] HTTP ${PORT} 端口暂被占用，500ms 后重试 (${attempt + 1}/10)...`);
+      httpServer.removeListener('listening', onHttpListening); // 移除本 attempt 挂起的成功回调，防止成功后重复执行
+      setTimeout(() => listenHttp(attempt + 1), 500);
+      return;
+    }
+    console.error(`[ERROR] HTTP ${PORT} 端口监听失败: ${err.message}`);
+    if (err.code === 'EADDRINUSE') {
+      console.warn('[WARN] 进程保持运行，等待下次文件变更重启（node --watch）');
+    } else {
+      process.exit(1);
+    }
+  });
+  httpServer.once('listening', onHttpListening);
+  httpServer.listen(PORT);
+};
+
+listenHttp();

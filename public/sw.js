@@ -1,4 +1,4 @@
-const CACHE_NAME = 'soul-v5';
+const CACHE_NAME = 'soul-v8';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -35,6 +35,22 @@ self.addEventListener('fetch', (event) => {
 
   // Socket.IO: network only
   if (url.pathname.startsWith('/socket.io/')) return;
+
+  // 页面主文档：网络优先（保证发版后页面代码最新），离线才回退缓存
+  if (request.mode === 'navigate' || url.pathname === '/' || url.pathname === '/index.html') {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          if (response.ok) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+          }
+          return response;
+        })
+        .catch(() => caches.match(request))
+    );
+    return;
+  }
 
   // API: network first, fallback to cache
   if (url.pathname.startsWith('/api/')) {

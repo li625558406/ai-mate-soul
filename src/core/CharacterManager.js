@@ -3,6 +3,31 @@ import path from 'path';
 
 const CHARACTERS_DIR = path.resolve(process.cwd(), 'data', 'characters');
 
+// 图片扩展名（含点前缀变体用于匹配文件名）
+const IMG_EXT_RE = /\.(jpe?g|png|webp|bmp)$/i;
+
+/**
+ * 旧版迁移：历史版本"头像即参考图"（单图存为 avatar.* 且删除目录内其他图片）。
+ * 该图实际是生成用立绘，迁移为 reference.*；已存在 reference.* 则不动。
+ */
+function _migrateLegacyReference(dir) {
+  const images = fs.existsSync(dir)
+    ? fs.readdirSync(dir).filter(f => IMG_EXT_RE.test(f))
+    : [];
+  if (images.length === 0) return;
+  if (images.some(f => /^reference\./i.test(f))) return;
+  // 取第一张非 reference 图片（通常是旧 avatar.*，也可能是更早的任意命名）
+  const legacy = images.find(f => !/^reference\./i.test(f));
+  if (!legacy) return;
+  const ext = path.extname(legacy);
+  try {
+    fs.renameSync(path.join(dir, legacy), path.join(dir, `reference${ext}`));
+    console.log(`[CharacterManager] 迁移旧参考图: ${legacy} -> reference${ext}`);
+  } catch (err) {
+    console.warn(`[CharacterManager] 旧参考图迁移失败: ${legacy}`, err.message);
+  }
+}
+
 /**
  * CharacterManager - 角色档案加载与管理
  *
@@ -49,6 +74,7 @@ export class CharacterManager {
             relationship_milestones: [],
           };
         }
+        _migrateLegacyReference(path.join(CHARACTERS_DIR, dir));
         this._characters.set(profile.id, profile);
       } catch (err) {
         console.warn(`[CharacterManager] 加载角色文件失败: ${dir}`, err.message);
@@ -196,8 +222,13 @@ export class CharacterManager {
    * @returns {{ ok: boolean, error?: string, profile?: object }}
    */
   createCharacter(profile, { copyFrom } = {}) {
-    const id = profile?.id;
-    if (!this._isValidId(id)) {
+    // id 是内部标识：前端表单新增时不收集 id（中文全名也无法 slug 化），缺失时自动生成；显式提供时仍严格校验
+    let id = profile?.id;
+    if (id === undefined || id === null || id === '') {
+      do {
+        id = 'char_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      } while (this._characters.has(id));
+    } else if (!this._isValidId(id)) {
       return { ok: false, error: '角色 id 非法：仅允许小写字母/数字/下划线，2-32 位' };
     }
     if (this._characters.has(id)) {
@@ -254,18 +285,35 @@ export class CharacterManager {
     return { ok: true, profile: next };
   }
 
-  /** 更换角色参考图：先写临时文件成功后再删旧图，失败不丢原图 */
-  saveAvatar(characterId, buffer, ext) {
+  /**
+   * 保存角色图片（头像/参考图通用）：只清理同类旧文件，先写临时文件成功后再替换
+   * @param {'avatar'|'reference'} kind
+   */
+  saveImage(characterId, kind, buffer, ext) {
     if (!this._isValidId(characterId)) return { ok: false, error: '角色 id 非法' };
+    if (kind !== 'avatar' && kind !== 'reference') return { ok: false, error: '图片类型非法' };
     const dir = path.join(CHARACTERS_DIR, characterId);
     if (!fs.existsSync(dir)) return { ok: false, error: '角色目录不存在' };
-    const tmpPath = path.join(dir, `avatar.${ext}.tmp`);
+    const tmpPath = path.join(dir, `${kind}.${ext}.tmp`);
     fs.writeFileSync(tmpPath, buffer);
     for (const f of fs.readdirSync(dir)) {
-      if (/\.(jpe?g|png|webp|bmp)$/i.test(f)) fs.rmSync(path.join(dir, f), { force: true });
+      if (new RegExp(`^${kind}\\.${ext}$`, 'i').test(f)) continue; // 同名旧文件等 rename 原子替换
+      if (new RegExp(`^${kind}\\.(jpe?g|png|webp|bmp)$`, 'i').test(f)) {
+        fs.rmSync(path.join(dir, f), { force: true });
+      }
     }
-    fs.renameSync(tmpPath, path.join(dir, `avatar.${ext}`));
+    fs.renameSync(tmpPath, path.join(dir, `${kind}.${ext}`));
     return { ok: true };
+  }
+
+  /** 兼容旧调用名：保存头像（仅 UI 展示，不参与生成） */
+  saveAvatar(characterId, buffer, ext) {
+    return this.saveImage(characterId, 'avatar', buffer, ext);
+  }
+
+  /** 保存参考图（生成自拍图/视频时引入） */
+  saveReference(characterId, buffer, ext) {
+    return this.saveImage(characterId, 'reference', buffer, ext);
   }
 
   /** 彻底删除角色目录（JSON + 图片）并从内存移除 */
@@ -283,14 +331,24 @@ export class CharacterManager {
     return CHARACTERS_DIR;
   }
 
-  /** 获取角色参考图（立绘）路径 */
-  getReferenceImagePath(characterId) {
+  /** 按类型取角色图片路径（reference.* / avatar.* 严格匹配） */
+  _getImagePath(characterId, kind) {
     const dir = path.join(CHARACTERS_DIR, characterId);
     if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return null;
 
     const images = fs.readdirSync(dir).filter(f =>
-      /\.(jpe?g|png|webp|bmp)$/i.test(f)
+      new RegExp(`^${kind}\\.(jpe?g|png|webp|bmp)$`, 'i').test(f)
     );
     return images.length > 0 ? path.join(dir, images[0]) : null;
+  }
+
+  /** 获取角色参考图（立绘，供生成链路使用）路径 */
+  getReferenceImagePath(characterId) {
+    return this._getImagePath(characterId, 'reference');
+  }
+
+  /** 获取角色头像（仅 UI 展示）路径，不存在返回 null */
+  getAvatarPath(characterId) {
+    return this._getImagePath(characterId, 'avatar');
   }
 }

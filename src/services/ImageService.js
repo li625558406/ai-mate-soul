@@ -6,6 +6,27 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PHOTOS_DIR = path.resolve(process.cwd(), 'public', 'photos');
 const TEMPLATES_PATH = path.resolve(process.cwd(), 'data', 'photo_templates.json');
 const DASHSCOPE_IMAGE_URL = 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation';
+const ARK_DEFAULT_BASE = 'https://ark.cn-beijing.volces.com/api/v3';
+const DEFAULT_MODEL = 'wan2.7-image-pro';
+
+/** Base URL 归一（DashScope 协议）：留空走默认；只填主机则自动补 API 路径 */
+function normalizeDashscopeURL(url) {
+  if (!url) return DASHSCOPE_IMAGE_URL;
+  const u = String(url).trim().replace(/\/+$/, '');
+  return /\/api\//.test(u) ? u : `${u}/api/v1/services/aigc/multimodal-generation/generation`;
+}
+
+/** Base URL 归一（火山方舟 Ark 协议）：返回 images/generations 完整端点 */
+function resolveArkEndpoint(url) {
+  const u = String(url || '').trim().replace(/\/+$/, '');
+  const base = !u ? ARK_DEFAULT_BASE : (/\/api\//.test(u) ? u : `${u}/api/v3`);
+  return `${base}/images/generations`;
+}
+
+/** 协议识别：volces.com 域名或 doubao-* 模型 → 火山方舟，否则 DashScope */
+function detectProtocol(baseURL, model) {
+  return /volces\.com/i.test(baseURL) || /^doubao-/i.test(model) ? 'ark' : 'dashscope';
+}
 
 /**
  * ImageService - AI 伴侣绘图引擎
@@ -20,8 +41,10 @@ const DASHSCOPE_IMAGE_URL = 'https://dashscope.aliyuncs.com/api/v1/services/aigc
  * 5. 存储与反馈 — 保存图片 + 记录数据库
  */
 export class ImageService {
-  constructor({ apiKey, db, characterManager, timeService, llmProvider, provider }) {
+  constructor({ apiKey, baseURL, model, db, characterManager, timeService, llmProvider, provider }) {
     this._apiKey = apiKey;
+    this._baseURL = String(baseURL || '').trim();
+    this._model = model || DEFAULT_MODEL;
     this._db = db;
     this._characterManager = characterManager;
     this._timeService = timeService;
@@ -35,6 +58,13 @@ export class ImageService {
     if (!fs.existsSync(PHOTOS_DIR)) {
       fs.mkdirSync(PHOTOS_DIR, { recursive: true });
     }
+  }
+
+  /** 运行时刷新配置（设置保存后立即生效） */
+  updateConfig({ apiKey, baseURL, model }) {
+    if (apiKey) this._apiKey = apiKey;
+    if (baseURL !== undefined) this._baseURL = String(baseURL || '').trim();
+    if (model) this._model = model;
   }
 
   _loadTemplates() {
@@ -232,25 +262,25 @@ ${hasRefImage ? '- Do NOT specify hair color, eye color, or facial features — 
 
     // 基础穿着库（按原型，二次元风格）
     const wardrobe = {
-      tsundere: [
+      '傲娇': [
         'an oversized black hoodie and ripped jeans, anime casual style',
         'a loose dark t-shirt and denim shorts, anime street fashion',
         'a black knit sweater and leggings, cozy anime style',
         'a cream-white loose sweater and wide-leg pants, anime aesthetic',
       ],
-      loli: [
+      '萝莉': [
         'a pink pastel cardigan and white pleated skirt, cute anime outfit',
         'a cute oversized hoodie and shorts, kawaii anime style',
         'a JK uniform with a cardigan, anime schoolgirl look',
         'a white cotton dress with floral print, sweet anime style',
       ],
-      oneesan: [
+      '御姐': [
         'a silk blouse and tailored trousers, elegant anime style',
         'a cashmere sweater and wide-leg pants, mature anime fashion',
         'a fitted turtleneck and midi skirt, sophisticated anime look',
         'a casual blazer over a simple t-shirt, cool anime aesthetic',
       ],
-      neighbor: [
+      '邻家': [
         'a soft linen shirt and cotton midi skirt, gentle anime style',
         'a light blue denim jacket and white dress, fresh anime look',
         'a cozy knit sweater and jeans, warm anime casual',
@@ -318,59 +348,97 @@ ${hasRefImage ? '- Do NOT specify hair color, eye color, or facial features — 
   }
 
   /**
-   * 调用 DashScope Wanx 2.7 Image Pro 生成图片
+   * 生成图片（自动识别协议：火山方舟 Ark / DashScope Wanx）
    * @param {string} prompt - 文本提示词
    * @param {string|null} refImagePath - 角色参考图本地路径
-   * @returns {string} 图片 URL
+   * @returns {string} 图片 URL（或 data URL，downloadAndSave 兼容两者）
    */
   async generateImage(prompt, refImagePath = null) {
     console.log(`[ImageService] generateImage 开始, refImagePath=${refImagePath || '无'}, apiKey=${this._apiKey ? '已配置' : '未配置'}`);
 
-    // 构建内容数组：有参考图时先放图片再放文字
-    const content = [];
-
-    if (refImagePath && fs.existsSync(refImagePath)) {
+    // 参考图统一读为 data URL；也直接接受 dataURL 字符串（如用户上传的附件）
+    let refDataUrl = null;
+    if (typeof refImagePath === 'string' && refImagePath.startsWith('data:')) {
+      refDataUrl = refImagePath;
+      console.log(`[ImageService] 使用 dataURL 参考图 (${(refImagePath.length / 1024).toFixed(0)}KB)`);
+    } else if (refImagePath && fs.existsSync(refImagePath)) {
       const imageBuffer = fs.readFileSync(refImagePath);
-      const base64 = imageBuffer.toString('base64');
       const ext = path.extname(refImagePath).toLowerCase().replace('.', '');
       const mime = ext === 'png' ? 'image/png' : 'image/jpeg';
-      content.push({ image: `data:${mime};base64,${base64}` });
+      refDataUrl = `data:${mime};base64,${imageBuffer.toString('base64')}`;
       console.log(`[ImageService] 已加载参考图: ${path.basename(refImagePath)} (${(imageBuffer.length / 1024).toFixed(0)}KB, mime=${mime})`);
     } else if (refImagePath) {
       console.warn(`[ImageService] 参考图路径存在但文件不存在: ${refImagePath}`);
     }
 
-    // 文字提示词：有参考图时强化角色一致性约束
-    const textPrompt = refImagePath
+    // 有参考图时强化角色一致性约束
+    const textPrompt = refDataUrl
       ? `Reference image (图1) is the character's official appearance. You MUST strictly follow the reference image for: hair color, hair style, eye color, face shape, and overall character design. Do NOT change these features. Generate the following scene with this exact character: ${prompt}`
       : prompt;
+
+    const proto = detectProtocol(this._baseURL, this._model);
+    console.log(`[ImageService] 协议: ${proto}, 文字提示词 (前300字): ${textPrompt.slice(0, 300)}...`);
+    return proto === 'ark'
+      ? this._generateArk(textPrompt, refDataUrl)
+      : this._generateDashscope(textPrompt, refDataUrl);
+  }
+
+  /** 火山方舟 Ark 协议：POST {base}/images/generations（Seedream 系列） */
+  async _generateArk(textPrompt, refDataUrl) {
+    const endpoint = resolveArkEndpoint(this._baseURL);
+    const requestBody = {
+      model: this._model,
+      prompt: textPrompt,
+      size: '2K',
+      response_format: 'url',
+      watermark: false,
+      ...(refDataUrl ? { image: [refDataUrl] } : {}),
+    };
+    console.log(`[ImageService] 发送请求到火山方舟: ${endpoint}`);
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${this._apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      console.error(`[ImageService] 火山方舟错误响应: ${err.slice(0, 500)}`);
+      // 输入图/生成结果触发平台安全审核（常见为误判），给出可操作提示而非原始报错
+      if (/OutputImageSensitiveContentDetected|InputImageSensitiveContentDetected/.test(err)) {
+        throw new Error('生成内容未通过绘图平台安全审核（通常为误判），请调整参考图或补充要求后重试，或稍后再试');
+      }
+      throw new Error(`火山方舟图片生成失败 (${response.status}): ${err}`);
+    }
+
+    const result = await response.json();
+    const item = result?.data?.[0];
+    const imageUrl = item?.url || (item?.b64_json ? `data:image/jpeg;base64,${item.b64_json}` : null);
+    if (!imageUrl) {
+      console.error(`[ImageService] 火山方舟响应中无图片, 完整响应: ${JSON.stringify(result).slice(0, 500)}`);
+      throw new Error('火山方舟响应中未找到图片');
+    }
+    console.log(`[ImageService] 图片生成成功 (Ark)`);
+    return imageUrl;
+  }
+
+  /** DashScope Wanx 协议：multimodal-generation */
+  async _generateDashscope(textPrompt, refDataUrl) {
+    const content = [];
+    if (refDataUrl) content.push({ image: refDataUrl });
     content.push({ text: textPrompt });
 
     const requestBody = {
-      model: 'wan2.7-image-pro',
-      input: {
-        messages: [
-          {
-            role: 'user',
-            content,
-          },
-        ],
-      },
-      parameters: {
-        size: '768*1024',
-        n: 1,
-        watermark: false,
-      },
+      model: this._model,
+      input: { messages: [{ role: 'user', content }] },
+      parameters: { size: '768*1024', n: 1, watermark: false },
     };
-    console.log(`[ImageService] 发送请求到 DashScope, content items=${content.length} (图片x${content.filter(c => c.image).length}, 文字x${content.filter(c => c.text).length})`);
-    console.log(`[ImageService] 文字提示词 (前300字): ${textPrompt.slice(0, 300)}...`);
+    console.log(`[ImageService] 发送请求到 DashScope, content items=${content.length}`);
 
-    const response = await fetch(DASHSCOPE_IMAGE_URL, {
+    const response = await fetch(normalizeDashscopeURL(this._baseURL), {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${this._apiKey}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Authorization': `Bearer ${this._apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(requestBody),
     });
 
@@ -383,8 +451,6 @@ ${hasRefImage ? '- Do NOT specify hair color, eye color, or facial features — 
     }
 
     const result = await response.json();
-    console.log(`[ImageService] DashScope 响应结构: output=${!!result.output}, choices=${result.output?.choices?.length}, content=${result.output?.choices?.[0]?.message?.content?.length}`);
-
     const imageUrl = result?.output?.choices?.[0]?.message?.content?.[0]?.image;
     if (!imageUrl) {
       console.error(`[ImageService] DashScope 响应中无图片 URL, 完整响应: ${JSON.stringify(result).slice(0, 500)}`);
@@ -393,6 +459,45 @@ ${hasRefImage ? '- Do NOT specify hair color, eye color, or facial features — 
 
     console.log(`[ImageService] 图片生成成功, URL: ${imageUrl.slice(0, 100)}...`);
     return imageUrl;
+  }
+
+  /**
+   * 最小化真实生成校验（供 /api/settings/test 使用），自动识别协议
+   * @param {{ apiKey?: string, baseURL?: string, model?: string }} overrides - 掩码 Key 已在上游解析
+   * @returns {{ ok: boolean, message: string }}
+   */
+  async probe({ apiKey, baseURL, model } = {}) {
+    const key = apiKey || this._apiKey;
+    const url = (baseURL || this._baseURL || '').trim();
+    const mdl = model || this._model;
+    const proto = detectProtocol(url, mdl);
+    const endpoint = proto === 'ark' ? resolveArkEndpoint(url) : normalizeDashscopeURL(url);
+
+    const body = proto === 'ark'
+      ? { model: mdl, prompt: 'a simple red circle on white background', size: '1K', response_format: 'url', watermark: false }
+      : {
+          model: mdl || 'wan2.7-image-pro',
+          input: { messages: [{ role: 'user', content: [{ text: 'a simple red circle on white background' }] }] },
+          parameters: { size: '512*512', n: 1, watermark: false },
+        };
+
+    try {
+      const r = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) return { ok: false, message: `HTTP ${r.status}: ${JSON.stringify(data).slice(0, 120)}` };
+      const hasImage = proto === 'ark'
+        ? !!(data?.data?.[0]?.url || data?.data?.[0]?.b64_json)
+        : !!data?.output?.choices?.[0]?.message?.content?.[0]?.image;
+      return hasImage
+        ? { ok: true, message: `Key 有效（${proto === 'ark' ? '火山方舟' : 'DashScope'}），测试图生成成功` }
+        : { ok: false, message: `响应异常: ${JSON.stringify(data).slice(0, 120)}` };
+    } catch (err) {
+      return { ok: false, message: `请求失败: ${err.message}` };
+    }
   }
 
   /**

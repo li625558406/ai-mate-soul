@@ -5,9 +5,9 @@ const SETTINGS_PATH = path.resolve(process.cwd(), 'data', 'settings.json');
 
 const DEFAULT_SETTINGS = {
   chat: { baseURL: '', apiKey: '', model: '' },
-  image: { baseURL: '', apiKey: '' },
+  image: { baseURL: '', apiKey: '', model: '' },
   tts: { baseURL: '', apiKey: '' },
-  video: { baseURL: '', apiKey: '', model: '' },
+  video: { baseURL: '', apiKey: '', model: '', maxDuration: 5 },
 };
 
 export class SettingsManager {

@@ -42,24 +42,60 @@ export class EnvironmentService {
       '12-31': '跨年夜',
     };
 
-    // 天气 → 心情修正映射
+    // 天气 → 心情修正映射（覆盖 wttr.in/worldweatheronline 全部天气描述，保证不透出英文）
     this._weatherMoodMap = {
       'Sunny': { mood: '晴朗', effect: '心情不错，阳光让人舒服' },
       'Clear': { mood: '晴朗', effect: '天气很好，适合出门' },
-      'Patchy rain possible': { mood: '可能有雨', effect: '好像要下雨了' },
-      'Patchy light drizzle': { mood: '毛毛雨', effect: '飘着小雨，还好' },
       'Partly cloudy': { mood: '多云', effect: '' },
       'Cloudy': { mood: '阴天', effect: '有点闷，没什么精神' },
       'Overcast': { mood: '阴天', effect: '灰蒙蒙的，不太想动' },
       'Mist': { mood: '薄雾', effect: '雾蒙蒙的，出门要小心' },
       'Haze': { mood: '雾霾', effect: '灰蒙蒙的，不太想出门' },
       'Fog': { mood: '大雾', effect: '什么都看不清，有点烦' },
+      'Freezing fog': { mood: '冻雾', effect: '又冷又有雾，不想出门' },
+      'Patchy rain possible': { mood: '可能有雨', effect: '好像要下雨了' },
+      'Patchy rain nearby': { mood: '有零星雨', effect: '附近好像在下雨' },
+      'Patchy light drizzle': { mood: '毛毛雨', effect: '飘着小雨，还好' },
+      'Light drizzle': { mood: '毛毛雨', effect: '飘着小雨，还好' },
+      'Freezing drizzle': { mood: '冻毛雨', effect: '又冷又下雨，难受' },
+      'Heavy freezing drizzle': { mood: '冻毛雨', effect: '冻雨让人只想躲着' },
+      'Patchy light rain': { mood: '小雨', effect: '零零星星的雨，烦人' },
       'Light rain': { mood: '小雨', effect: '下着小雨，有点忧郁' },
+      'Moderate rain at times': { mood: '中雨', effect: '时大时小的雨，懒得出门' },
       'Moderate rain': { mood: '中雨', effect: '雨声让人想发呆' },
+      'Heavy rain at times': { mood: '大雨', effect: '雨好大，不想出门' },
       'Heavy rain': { mood: '大雨', effect: '雨好大，不想出门' },
+      'Light freezing rain': { mood: '冻雨', effect: '冻雨好冷，路上要小心' },
+      'Moderate or heavy freezing rain': { mood: '冻雨', effect: '冻雨好冷，路上要小心' },
+      'Light sleet': { mood: '雨夹雪', effect: '雨夹雪的天气，又冷又湿' },
+      'Moderate or heavy sleet': { mood: '雨夹雪', effect: '雨夹雪的天气，又冷又湿' },
+      'Patchy light snow': { mood: '小雪', effect: '好像飘雪了，有点浪漫' },
       'Light snow': { mood: '小雪', effect: '下雪了，好漂亮' },
+      'Patchy moderate snow': { mood: '中雪', effect: '雪越下越大了' },
+      'Moderate snow': { mood: '中雪', effect: '雪越下越大了' },
+      'Patchy heavy snow': { mood: '大雪', effect: '雪好大，世界都变白了' },
       'Heavy snow': { mood: '大雪', effect: '雪好大，世界都变白了' },
+      'Ice pellets': { mood: '冰粒', effect: '下冰粒了，打在身上有点疼' },
+      'Light rain shower': { mood: '阵雨', effect: '一阵一阵的雨，带伞吧' },
+      'Moderate or heavy rain shower': { mood: '大阵雨', effect: '雨说下就下，好烦' },
+      'Torrential rain shower': { mood: '暴雨', effect: '暴雨倾盆，哪儿也不想去' },
+      'Light sleet showers': { mood: '雨夹雪', effect: '雨夹雪一阵一阵的，好冷' },
+      'Moderate or heavy sleet showers': { mood: '雨夹雪', effect: '雨夹雪一阵一阵的，好冷' },
+      'Light snow showers': { mood: '阵雪', effect: '一阵一阵的雪，好漂亮' },
+      'Moderate or heavy snow showers': { mood: '大雪', effect: '雪好大，世界都变白了' },
+      'Light showers of ice pellets': { mood: '冰粒', effect: '下冰粒了，打在身上有点疼' },
+      'Moderate or heavy showers of ice pellets': { mood: '冰粒', effect: '冰粒砸得窗户啪啪响' },
+      'Patchy light rain in area with thunder': { mood: '雷阵雨', effect: '又打雷又下雨，有点害怕' },
+      'Moderate or heavy rain in area with thunder': { mood: '雷阵雨', effect: '又打雷又下雨，有点害怕' },
+      'Patchy light snow in area with thunder': { mood: '雷伴雪', effect: '打雷还下雪，好罕见的天气' },
+      'Moderate or heavy snow in area with thunder': { mood: '雷伴雪', effect: '打雷还下雪，好罕见的天气' },
+      'Thundery outbreaks possible': { mood: '可能有雷雨', effect: '好像要打雷了，有点不安' },
       'Thunderstorm': { mood: '雷暴', effect: '打雷了，有点害怕' },
+      'Blowing snow': { mood: '风雪', effect: '风卷着雪，冷得刺骨' },
+      'Blizzard': { mood: '暴风雪', effect: '暴风雪，哪儿也去不了' },
+      'Patchy snow possible': { mood: '可能有雪', effect: '好像要下雪了' },
+      'Patchy sleet possible': { mood: '可能雨夹雪', effect: '可能会下雨夹雪' },
+      'Patchy freezing drizzle possible': { mood: '可能冻雨', effect: '可能会结冰，出门小心' },
     };
   }
 
@@ -83,7 +119,8 @@ export class EnvironmentService {
       if (weather) {
         const mapped = this._weatherMoodMap[weather.description] || {};
         weatherEffect = mapped.effect || '';
-        weather.mood = mapped.mood || weather.description;
+        // 未命中映射的天气描述统一转中文兜底，绝不向前端/prompt 透出英文原文
+        weather.mood = mapped.mood || '天气多变';
       }
     } catch {
       // 天气获取失败不影响主流程
@@ -111,7 +148,7 @@ export class EnvironmentService {
       if (!current) return null;
 
       const weather = {
-        description: current.weatherDesc?.[0]?.value || 'Unknown',
+        description: current.weatherDesc?.[0]?.value || '未知',
         tempC: current.temp_C,
         feelsLike: current.FeelsLikeC,
         humidity: current.humidity,
