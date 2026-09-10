@@ -108,7 +108,8 @@ export class MultimodalService {
     for (const seg of this._splitJsonObjects(raw)) {
       if (seg.data) {
         chunks.push(Buffer.from(seg.data, 'base64'));
-      } else if (seg.code !== undefined && seg.code !== 0) {
+      // 20000000 为火山成功结束帧（OK，data 为 null），不算错误
+      } else if (seg.code !== undefined && seg.code !== 0 && seg.code !== 20000000) {
         throw new Error(`火山 TTS 分片错误 code=${seg.code}: ${seg.message || ''}`);
       }
     }
