@@ -22,6 +22,7 @@ import { EnvironmentService } from './services/EnvironmentService.js';
 import { ProactiveService } from './services/ProactiveService.js';
 import { MultimodalService } from './services/MultimodalService.js';
 import { VoiceCallService } from './services/VoiceCallService.js';
+import { VOICE_CATALOG } from './services/VoiceCatalog.js';
 import { ImageService } from './services/ImageService.js';
 import { VideoService } from './services/VideoService.js';
 import { DiaryService } from './services/DiaryService.js';
@@ -517,7 +518,7 @@ app.post('/api/tts', async (req, res) => {
 });
 
 app.get('/api/voices', (_req, res) => {
-  res.json({ voices: multimodalService.getVoicePresets() });
+  res.json({ voices: VOICE_CATALOG });
 });
 
 // --- Photo ---
