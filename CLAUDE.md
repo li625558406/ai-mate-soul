@@ -18,7 +18,7 @@ npm start            # 生产模式
 - 启动后访问 `http://localhost:3000`；HTTPS `https://localhost:3443`（自签证书自动生成，手机麦克风权限需要 HTTPS）。
 - 对话/绘图/TTS/视频的 API 配置通过 **Web 设置页**（`public/index.html` 设置弹窗 → `PUT /api/settings`）管理，持久化在 `data/settings.json`（唯一配置源，与 `.env` 无关，启动不做 env 校验，未配置仅告警不退出）。
 - `.env` 仅 `PORT` / `HTTPS_PORT` 仍生效。
-- 项目迭代记录见 [CHANGE.md](./CHANGE.md)（按日期追加需求与整改条目）（当前迭代：拟人化二期——情绪惯性/吵架敏感期、离线主动消息未读补投、照片忙碌判断合并提速、否定反转情感分析、心情指标统一、记忆时间衰减、独白反哺、主动消息人格化）。
+- 项目迭代记录见 [CHANGE.md](./CHANGE.md)（按日期追加需求与整改条目）（当前迭代：忙碌系统改造的对抗性测试——43 项断言全过，修复 jitter 翻正、活动名绕过、prompt 注入、落地未清洗 4 处缺陷；前置：忙碌系统人性化改造与角色背景视频功能，详见 CHANGE.md 2026-09-10 条目）。
 
 ## 架构
 

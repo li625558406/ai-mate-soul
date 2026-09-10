@@ -6,3 +6,10 @@ data/
 .superpowers/
 .codegraph/
 .playwright-mcp/
+
+# 运行时语音条文件
+public/voices/
+
+# 运行时生成媒体
+public/photos/
+public/videos/

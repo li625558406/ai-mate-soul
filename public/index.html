@@ -45,7 +45,7 @@ body { font-family:'Segoe UI', system-ui, -apple-system, sans-serif; background:
 .stat-row { display:flex; align-items:center; gap:8px; }
 .stat-lbl { font-size:11px; color:var(--text2); white-space:nowrap; width:38px; }
 .stat-row b { font-size:12px; min-width:44px; text-align:right; font-variant-numeric:tabular-nums; }
-.bar { flex:1; height:8px; background:var(--bg); border-radius:4px; position:relative; overflow:hidden; }
+.bar { flex:1; height:8px; background:#f0dcd4; border-radius:4px; position:relative; overflow:hidden; }
 .bar > div { height:100%; border-radius:4px; transition:width .5s, left .5s, background .5s; position:absolute; top:0; }
 .bar.mood .mood-center { position:absolute; left:50%; top:0; bottom:0; width:1px; background:var(--text2); opacity:.35; z-index:2; }
 .stat-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:2px; }
@@ -98,21 +98,37 @@ body { font-family:'Segoe UI', system-ui, -apple-system, sans-serif; background:
 .cold-war-hint { font-size:12px; color:var(--red); padding:0 16px; display:none; flex-shrink:0; }
 .cold-war-hint.show { display:block; padding:6px 16px; }
 
+/* ===== 角色背景视频层：绝对定位铺满聊天页，聊天气泡浮在上层 ===== */
+#chatPane { position:relative; }
+#chatPane > *:not(.bg-video-layer) { position:relative; z-index:1; }
+.bg-video-layer { position:absolute; inset:0; z-index:0; overflow:hidden; pointer-events:none; display:none; }
+.bg-video-layer.show { display:block; }
+.bg-video-layer video { width:100%; height:100%; object-fit:cover; object-position:center 35%; }
+/* 半透明浅色遮罩保证气泡可读性（与 --bg 同色系） */
+/* 半透明浅色遮罩（白玻璃，保持视频可见度），配合气泡深色文字保证可读性 */
+.bg-video-layer::after { content:''; position:absolute; inset:0; background:linear-gradient(rgba(253,248,245,.22), rgba(253,248,245,.45)); }
+
 .messages { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:10px; }
 .msg { max-width:78%; display:flex; flex-direction:column; }
 .msg.user { align-self:flex-end; }
-.msg.ai, .msg.proactive, .msg.photo, .msg.video { align-self:flex-start; }
-.msg .bubble { padding:10px 14px; border-radius:16px; font-size:14px; line-height:1.6; white-space:pre-wrap; word-break:break-word; }
+.msg.ai, .msg.assistant, .msg.proactive, .msg.photo, .msg.video { align-self:flex-start; }
+.msg .bubble { padding:10px 14px; border-radius:16px; font-size:14px; line-height:1.6; white-space:pre-wrap; word-break:break-word; color:#3a2e2a; }
 .msg.user .bubble { background:var(--grad); color:#fff; border-bottom-right-radius:4px; box-shadow:var(--shadow); }
-.msg.ai .bubble { background:var(--surface); border-bottom-left-radius:4px; box-shadow:var(--shadow); }
+.msg.ai .bubble, .msg.assistant .bubble { background:var(--surface); border-bottom-left-radius:4px; box-shadow:var(--shadow); }
 .msg.proactive .bubble { background:var(--surface); border:1px solid rgba(255,106,136,.35); border-bottom-left-radius:4px; }
 .msg.photo .bubble, .msg.video .bubble { background:var(--surface); padding:6px; max-width:360px; box-shadow:var(--shadow); }
 .msg.photo img { width:100%; border-radius:10px; cursor:pointer; display:block; }
 .msg.video video { width:100%; border-radius:10px; display:block; }
 .photo-caption { font-size:12px; color:var(--text2); padding:4px 6px; }
-.msg .time { font-size:10px; color:var(--text2); margin-top:4px; }
+.msg.voice { align-self:flex-start; }
+.msg.voice .bubble { background:var(--surface); display:flex; align-items:center; gap:10px; cursor:pointer; min-width:96px; border-bottom-left-radius:4px; box-shadow:var(--shadow); user-select:none; }
+.msg.voice .bubble:active { opacity:.8; }
+.voice-play { font-size:16px; color:var(--accent); }
+.voice-dur { font-size:13px; color:var(--text2); }
+.msg .time { font-size:10px; color:#7a6560; font-weight:600; margin-top:4px; width:fit-content; background:rgba(255,255,255,.75); padding:1px 8px; border-radius:8px; }
+.msg.user .time { margin-left:auto; }
 .msg.user .time { text-align:right; }
-.msg .thought { font-size:12px; color:var(--text2); font-style:italic; padding:4px 8px; background:rgba(255,106,136,.06); border-radius:6px; margin-bottom:4px; display:none; border-left:2px solid var(--accent); }
+.msg .thought { font-size:12px; color:#8a5a52; font-weight:500; font-style:italic; padding:4px 8px; background:rgba(253,248,245,.88); border-radius:6px; margin-bottom:4px; display:none; border-left:2px solid var(--accent); }
 .msg .thought.show { display:block; }
 .msg .tts-btn { margin-left:8px; cursor:pointer; opacity:.6; }
 
@@ -323,6 +339,10 @@ body.view-chat #homePane { display:none; }
 
   <!-- ===== 聊天页 ===== -->
   <main id="chatPane">
+    <!-- 角色背景视频层（绝对定位铺满，路径 /videos/bg_<charId>.mp4，不存在则自动隐藏） -->
+    <div class="bg-video-layer" id="bgVideoLayer">
+      <video id="bgVideo" muted loop playsinline preload="metadata"></video>
+    </div>
     <div id="cfgBanner">
       <span style="flex:1">&#9888; 对话 API 未配置，聊天功能不可用</span>
       <button class="btn-cancel" style="padding:5px 14px" onclick="openSettings()">去配置</button>
@@ -335,6 +355,7 @@ body.view-chat #homePane { display:none; }
         <div class="hero-sub" id="headerDesc">--</div>
       </div>
       <span class="status-badge status-comfortable" id="statusBadge" style="display:none">舒适</span>
+      <button class="btn-icon" title="背景视频 开/关" id="bgVideoBtn" onclick="toggleBgVideo()" style="display:none">&#127916;</button>
       <button class="btn-icon" title="语音通话" id="callBtn" onclick="startVoiceCall()" disabled style="color:var(--green)">&#128222;</button>
     </div>
     <div class="busy-bar" id="busyBar">
@@ -760,6 +781,7 @@ function selectCharacter(c, el, opts = {}) {
   document.getElementById('typingIndicator').classList.remove('show', 'typing-thinking');
 
   currentCharacterId = c.id;
+  applyBgVideo();
   document.querySelectorAll('.char-card').forEach(e => e.classList.remove('active'));
   el.classList.add('active');
   // Chat header: avatar image + name + basic info
@@ -802,6 +824,65 @@ function selectCharacter(c, el, opts = {}) {
   }
 }
 
+// ===== 角色背景视频：桌面用 16:9（bg_<id>_16.9.mp4），手机用 9:16（bg_<id>_9.16.mp4），缺某比例自动回退另一个 =====
+let bgVideoLoadedKey = null; // 已加载的 "charId:文件" 缓存键，避免重复切 src
+function bgVideoCandidates(cid) {
+  return window.innerWidth >= 900
+    ? ['/videos/bg_' + cid + '_16.9.mp4', '/videos/bg_' + cid + '_9.16.mp4']
+    : ['/videos/bg_' + cid + '_9.16.mp4', '/videos/bg_' + cid + '_16.9.mp4'];
+}
+function applyBgVideo() {
+  const layer = document.getElementById('bgVideoLayer');
+  const video = document.getElementById('bgVideo');
+  const btn = document.getElementById('bgVideoBtn');
+  const cid = currentCharacterId;
+  if (!cid) { layer.classList.remove('show'); video.pause(); return; }
+  btn.style.display = 'none';
+  // 按当前视口比例依次 HEAD 探测：都存在时优先匹配比例，只有另一个则回退；全不存在则连按钮一起隐藏
+  const candidates = bgVideoCandidates(cid);
+  const tryNext = i => {
+    if (currentCharacterId !== cid) return; // 已切换角色，过期响应忽略
+    if (i >= candidates.length) { layer.classList.remove('show'); video.pause(); return; }
+    fetch(candidates[i], { method: 'HEAD' }).then(res => {
+      if (currentCharacterId !== cid) return;
+      if (!res.ok) { tryNext(i + 1); return; }
+      btn.style.display = '';
+      const enabled = localStorage.getItem('bgVideo:' + cid) !== '0';
+      btn.style.opacity = enabled ? '' : '.45';
+      const key = cid + ':' + candidates[i];
+      if (enabled) {
+        if (bgVideoLoadedKey !== key) { video.src = candidates[i]; bgVideoLoadedKey = key; }
+        layer.classList.add('show');
+      } else {
+        layer.classList.remove('show');
+      }
+      syncBgVideoPlayback();
+    }).catch(() => {});
+  };
+  tryNext(0);
+}
+// 视口跨越桌面/手机断点时重新选比例
+window.addEventListener('resize', (() => {
+  let lastWide = window.innerWidth >= 900;
+  return () => {
+    const nowWide = window.innerWidth >= 900;
+    if (nowWide !== lastWide) { lastWide = nowWide; applyBgVideo(); }
+  };
+})());
+// 播放/暂停同步：手机端回到主页时暂停省电，其余情况自动播放
+function syncBgVideoPlayback() {
+  const video = document.getElementById('bgVideo');
+  const layer = document.getElementById('bgVideoLayer');
+  if (!layer.classList.contains('show')) { video.pause(); return; }
+  const mobileHome = window.innerWidth < 900 && document.body.classList.contains('view-home');
+  if (mobileHome) { video.pause(); } else { video.play().catch(() => {}); }
+}
+function toggleBgVideo() {
+  const k = 'bgVideo:' + currentCharacterId;
+  localStorage.setItem(k, localStorage.getItem(k) === '0' ? '1' : '0');
+  applyBgVideo();
+}
+
 async function loadChatHistory(uid, characterId) {
   try {
     const res = await fetch(API + `/api/chat-history/${uid}/${characterId}`);
@@ -817,6 +898,11 @@ async function loadChatHistory(uid, characterId) {
         try {
           const p = JSON.parse(msg.content);
           div = appendMsg('photo', p.f, `📸 ${p.c || '照片'}`, msgTime);
+        } catch { div = appendMsg(msg.role, msg.content, null, msgTime); }
+      } else if (msg.role === 'voice') {
+        try {
+          const v = JSON.parse(msg.content);
+          div = appendMsg('voice', v.f, String(v.d || 1), msgTime);
         } catch { div = appendMsg(msg.role, msg.content, null, msgTime); }
       } else {
         // assistant 多条消息按换行拆成独立气泡
@@ -1063,6 +1149,11 @@ async function sendMessage() {
             const pd = JSON.parse(data);
             appendMsg('photo', pd.filename, `📸 ${pd.caption || '照片'}`);
             scrollBottom();
+          } else if (currentEvent === 'voice_message') {
+            const vd = JSON.parse(data);
+            appendMsg('voice', vd.filename, String(vd.duration || 1));
+            typing.classList.remove('show');
+            scrollBottom();
           }
           currentEvent = '';
         }
@@ -1112,6 +1203,10 @@ function appendMsg(role, text, prefix, timeStr) {
     const videoUrl = '/videos/' + encodeURIComponent(text);
     const captionHtml = prefix ? `<div class="photo-caption">${escapeHtml(prefix)}</div>` : '';
     div.innerHTML = `${captionHtml}<div class="bubble"><video src="${videoUrl}" controls playsinline preload="metadata"></video></div><div class="time">${time}</div>`;
+  } else if (role === 'voice') {
+    const dur = prefix || '1';
+    div.innerHTML = `<div class="bubble" onclick="playVoice(this, this._file)"><span class="voice-play">▶</span><span class="voice-dur">${escapeHtml(dur)}″</span></div><div class="time">${time}</div>`;
+    div.querySelector('.bubble')._file = text;
   } else if (role === 'ai' || role === 'assistant') {
     div.innerHTML = `${prefixStr}<div class="thought"></div><div class="bubble">${escapeHtml(text)}</div><div class="time">${time}</div>`;
   } else {
@@ -1120,6 +1215,23 @@ function appendMsg(role, text, prefix, timeStr) {
   container.insertBefore(div, document.getElementById('typingIndicator'));
   scrollBottom();
   return div;
+}
+
+// 语音条播放：点击切换播放/停止
+function playVoice(el, filename) {
+  const icon = el.querySelector('.voice-play');
+  if (el._audio && !el._audio.paused) {
+    el._audio.pause();
+    el._audio.currentTime = 0;
+    icon.textContent = '▶';
+    return;
+  }
+  const audio = new Audio('/voices/' + encodeURIComponent(filename));
+  el._audio = audio;
+  icon.textContent = '⏸';
+  audio.onended = () => { icon.textContent = '▶'; };
+  audio.onerror = () => { icon.textContent = '▶'; appendMsg('system', '语音播放失败'); };
+  audio.play();
 }
 
 // 数值反馈胶囊：好感±/成长/xp/心情±/情绪/雷区/升级，无变化时不渲染
@@ -1687,11 +1799,13 @@ function _tickBusyCountdown() {
 function openChatView() {
   document.body.classList.remove('view-home');
   document.body.classList.add('view-chat');
+  syncBgVideoPlayback();
   scrollBottom();
 }
 function openHomeView() {
   document.body.classList.add('view-home');
   document.body.classList.remove('view-chat');
+  syncBgVideoPlayback();
   refreshState();
 }
 // 通用弹层开关

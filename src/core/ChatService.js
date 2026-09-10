@@ -13,8 +13,11 @@
  *    e. LLM 流式调用 → 解析 thought/reply → 只流式输出 reply
  *    f. 保存对话 + 异步后置任务
  */
+import fs from 'fs';
+import path from 'path';
+
 export class ChatService {
-  constructor({ characterManager, emotionEngine, promptBuilder, llmProvider, db, memoryService, factExtractor, timeService, growthService, emotionStateMachine, environmentService, lifecycleService, defaultProvider, imageService, planExtractor }) {
+  constructor({ characterManager, emotionEngine, promptBuilder, llmProvider, db, memoryService, factExtractor, timeService, growthService, emotionStateMachine, environmentService, lifecycleService, defaultProvider, imageService, planExtractor, multimodalService }) {
     this.characterManager = characterManager;
     this.emotionEngine = emotionEngine;
     this.promptBuilder = promptBuilder;
@@ -30,6 +33,7 @@ export class ChatService {
     this.defaultProvider = defaultProvider;
     this.imageService = imageService || null;
     this.planExtractor = planExtractor || null;
+    this.multimodalService = multimodalService || null;
   }
 
   async *chatStream({ userId, characterId, message, provider }) {
@@ -74,7 +78,9 @@ export class ChatService {
     const currentAge = this.lifecycleService.getCurrentAge(character, state.first_met_at);
 
     // 2.5 忙碌状态检查（睡觉/开会/上课等；忙碌短语支持角色档案 busy_responses 个性化覆盖）
-    let justWokenUp = null; // { activity } 被吵醒时记录活动
+    // 睡觉是独占型活动（不能一心二用）；其他活动（开会/上课/洗澡等）可以边忙边聊，走正常聊天管线
+    let justWokenUp = null; // { activity } 被吵醒时记录活动（仅睡觉）
+    let busyMultitask = null; // { activity, remainingMin } 非睡觉活动的"一心二用"聊天上下文
     const BUSY_WAKE_THRESHOLD = 5;
     const DEFAULT_BUSY_RESPONSES = {
       '睡觉': ['zzZ...', '别吵...我在睡觉...', '嗯...再让我睡一会儿...', '...（翻身）', '明天再说...'],
@@ -92,50 +98,62 @@ export class ChatService {
       const now = new Date();
 
       if (now < busyEnd) {
-        // 还在忙碌中
-        this.db.incrementBusyCount(userId, characterId);
-        state.busy_message_count = (state.busy_message_count || 0) + 1;
+        // 活动名来自 LLM 判断，不可信：trim + 清洗（对抗性修复——"睡觉 "带空格/"午睡"可绕过独占，换行可注入 prompt）
+        const activity = this._sanitizeActivity(state.busy_activity);
+        const remainingMin = Math.ceil((busyEnd - now) / 60000);
+        // 含 睡/觉/盹/憩/休息 的一律视为独占型活动（"补觉"无"睡"字，故不能只匹配"睡"）
+        const isSleepActivity = /睡|觉|盹|憩|休息/.test(activity);
 
-        if (state.busy_message_count < BUSY_WAKE_THRESHOLD) {
-          // 未达到唤醒阈值，返回预设短语
-          const activity = state.busy_activity || '';
-          const pool = busyPools[activity] || defaultBusyResponses;
-          const response = pool[Math.floor(Math.random() * pool.length)];
-          const remainingMin = Math.ceil((busyEnd - now) / 60000);
-          const activityIcons = { '睡觉': '💤', '开会': '💼', '上课': '📚', '洗澡': '🚿' };
-          const icon = activityIcons[activity] || '⏳';
-
-          yield {
-            type: 'meta',
-            data: {
-              characterName: character.name,
-              affection: state.affection,
-              mood: 'busy',
-              moodDescription: `${icon} ${activity}中（还剩${remainingMin}分钟）`,
-              emotionLabel: 'busy',
-              emotionState: state.emotion_state,
-              xpGained: 0,
-              busyRemaining: remainingMin,
-              busyActivity: activity,
-            },
-          };
-
-          yield { type: 'chunk', data: response };
-          yield { type: 'done', data: null };
-
-          this.db.saveChatMessage({ userId, characterId, role: 'user', content: message, affectionAfter: state.affection });
-          this.db.saveChatMessage({ userId, characterId, role: 'assistant', content: response, affectionAfter: state.affection });
-          return;
+        if (!isSleepActivity) {
+          // 非睡觉活动：一心二用，正常走完整聊天管线（后续在 prompt 注入忙碌上下文、按好感度放慢回复）
+          busyMultitask = { activity, remainingMin };
+          console.log(`[ChatService] 忙碌中一心二用聊天: ${activity}（还剩${remainingMin}分钟）`);
         } else {
-          // 达到阈值，被迫醒来，心情变差
-          const oldMood = state.mood_level || 0;
-          const newMood = Math.max(-100, oldMood - 15);
-          this.db.clearBusyState(userId, characterId);
-          this.db.updateEmotionState(userId, characterId, 'uneasy', newMood, state.cold_war_until);
-          state.mood_level = newMood;
-          state.emotion_state = 'uneasy';
-          justWokenUp = { activity: state.busy_activity || '忙碌' };
-          console.log(`[ChatService] 角色 ${character.name} 被吵醒！心情 ${oldMood} → ${newMood}`);
+          // 睡觉：不能一心二用，连发消息达到阈值会被吵醒
+          this.db.incrementBusyCount(userId, characterId);
+          state.busy_message_count = (state.busy_message_count || 0) + 1;
+
+          if (state.busy_message_count < BUSY_WAKE_THRESHOLD) {
+            // 未达到唤醒阈值，返回梦话预设短语
+            const pool = busyPools[activity] || defaultBusyResponses;
+            const response = pool[Math.floor(Math.random() * pool.length)];
+            const activityIcons = { '睡觉': '💤', '开会': '💼', '上课': '📚', '洗澡': '🚿' };
+            const icon = activityIcons[activity] || '⏳';
+
+            yield {
+              type: 'meta',
+              data: {
+                characterName: character.name,
+                affection: state.affection,
+                mood: 'busy',
+                moodDescription: `${icon} ${activity}中（还剩${remainingMin}分钟）`,
+                emotionLabel: 'busy',
+                emotionState: state.emotion_state,
+                xpGained: 0,
+                busyRemaining: remainingMin,
+                busyActivity: activity,
+              },
+            };
+
+            yield { type: 'chunk', data: response };
+            yield { type: 'done', data: null };
+
+            this.db.saveChatMessage({ userId, characterId, role: 'user', content: message, affectionAfter: state.affection });
+            this.db.saveChatMessage({ userId, characterId, role: 'assistant', content: response, affectionAfter: state.affection });
+            return;
+          } else {
+            // 达到阈值，被迫醒来；心情惩罚按好感分档——感情越好越宽容（舍不得气你）
+            const wakeAffection = state.affection || 0;
+            const moodPenalty = wakeAffection >= 60 ? -6 : wakeAffection >= 30 ? -10 : -15;
+            const oldMood = state.mood_level || 0;
+            const newMood = Math.max(-100, oldMood + moodPenalty);
+            this.db.clearBusyState(userId, characterId);
+            this.db.updateEmotionState(userId, characterId, 'uneasy', newMood, state.cold_war_until);
+            state.mood_level = newMood;
+            state.emotion_state = 'uneasy';
+            justWokenUp = { activity: activity || '睡觉' };
+            console.log(`[ChatService] 角色睡觉被吵醒（好感${wakeAffection}）：心情 ${oldMood} ${moodPenalty} → ${newMood}`);
+          }
         }
       } else {
         // 忙碌时间已过，自动清除
@@ -241,10 +259,63 @@ export class ChatService {
       }
     }
 
+    // 4.5 敷衍消息拟真反应：对超短敷衍消息（哦/嗯/呵）低概率不再长篇大论，只回一个极简短句（跳过 LLM）
+    if (this._shouldReplyPerfunctory({ message, weight, emotionResult, userId, characterId })) {
+      const moodLevel = emotionResult.moodLevel;
+      const pool = moodLevel < -50 ? ['...', '嗯', '？']
+        : moodLevel < -20 ? ['嗯。', '哦', '...']
+        : ['嗯嗯', '哦哦', '？', '哈'];
+      const response = pool[Math.floor(Math.random() * pool.length)];
+
+      // 好感度照常结算（敷衍消息本身是负贡献），但不给经验
+      const baseGrowth = state.affection < 80 ? 0.05 : 0.02;
+      const { newAffection, delta } = this.emotionEngine.updateAffection(state.affection, weight + baseGrowth);
+      const finalAffection = Math.min(100, Math.round(newAffection * 10) / 10);
+      const { mood: moodKey } = this.emotionEngine.mapMood(finalAffection);
+      this.db.updateAffection(userId, characterId, finalAffection, moodKey);
+      this.db.incrementChatCount(userId, characterId);
+      this.db.saveChatMessage({ userId, characterId, role: 'user', content: message, emotionWeight: weight, affectionAfter: finalAffection });
+      this.db.saveChatMessage({ userId, characterId, role: 'assistant', content: response, affectionAfter: finalAffection });
+      this.db.updateLastSeenAt(userId, characterId);
+
+      yield {
+        type: 'meta',
+        data: {
+          characterName: character.name,
+          affection: finalAffection,
+          mood: emotionResult.emotionState,
+          moodDescription: this.emotionStateMachine.getMoodDescription(moodLevel),
+          moodLevel,
+          emotionLabel: label,
+          affectionDelta: delta,
+          xpGained: 0,
+          emotionState: emotionResult.emotionState,
+          triggeredMinefield: null,
+        },
+      };
+
+      // 敷衍回复来得快（懒得理才会敷衍）
+      await this._sleep(600 + Math.floor(Math.random() * 1200));
+      yield { type: 'chunk', data: response };
+      yield { type: 'done', data: null };
+      console.log(`[ChatService] 敷衍消息拟真反应: "${message}" → "${response}" (mood=${moodLevel})`);
+      return;
+    }
+
     // 5. 正常模式：完整处理管线（weight/label 已在步骤 3 计算）
     // 基础好感增长：缓慢积累，模拟真实关系发展
-    const baseGrowth = state.affection < 80 ? 0.05 : 0.02;
-    const { newAffection, delta } = this.emotionEngine.updateAffection(state.affection, weight + baseGrowth);
+    // 睡觉被吵醒（justWokenUp）属负面交互：不享受基础正增长，消息正情绪不缓解打扰
+    // （weight 取 min(weight,0)），打扰惩罚按好感分档——感情越好越宽容
+    const wakePenalty = (state.affection || 0) >= 60 ? -0.1 : (state.affection || 0) >= 30 ? -0.2 : -0.3;
+    const baseGrowth = justWokenUp ? 0 : (state.affection < 80 ? 0.05 : 0.02);
+    const settledWeight = justWokenUp ? Math.min(weight, 0) + wakePenalty : weight;
+    let { newAffection, delta } = this.emotionEngine.updateAffection(state.affection, settledWeight + baseGrowth);
+    // 对抗性修复：updateAffection 的 ±0.2 随机抖动会把小额惩罚翻成正值（实测 -0.1 档 29% 概率），
+    // 被吵醒的结算语义是"至多不减"，delta 必须钳制为非正
+    if (justWokenUp && delta > 0) { delta = 0; newAffection = state.affection; }
+    // 中性/正面消息（weight ≥ 0）不允许被随机抖动翻成扣分：好感下降只能来自真实负面情绪
+    // （敷衍 -0.5 / 冒犯 / 吵醒等），普通闲聊最差持平
+    if (!justWokenUp && weight >= 0 && delta < 0) { delta = 0; newAffection = state.affection; }
     const growthBonus = this.emotionEngine.checkGrowth(state.chat_count, character.growth_logic);
     const finalAffection = Math.min(100, Math.round((newAffection + growthBonus) * 10) / 10);
     const { mood: moodKey, description: moodDescription } = this.emotionEngine.mapMood(finalAffection);
@@ -307,6 +378,7 @@ export class ChatService {
 
     // 8. 成长系统 + 互动天数
     const growth = this.growthService.processGrowth({ state, emotionWeight: weight, userMessage: message });
+    if (justWokenUp) growth.xpGained = 0; // 被打扰吵醒属负面交互，不给经验奖励（气头上）
     this.db.addExperience(userId, characterId, growth.xpGained);
     if (growth.leveledUp) this.db.updateLevel(userId, characterId, growth.newLevel);
     this.db.updateInteractionDays(userId, characterId);
@@ -350,6 +422,7 @@ export class ChatService {
       lifeStagePrompt: this.lifecycleService.getLifeStagePrompt(state.interaction_days || 1),
       currentAge,
       wokenUpContext: justWokenUp ? `你刚才正在${justWokenUp.activity}，被对方连续发消息吵醒了。你现在很不开心，语气应该明显变冷、变短。表现出被吵醒的烦躁。` : null,
+      busyMultitaskContext: busyMultitask ? `你现在正在${busyMultitask.activity}（还剩约${busyMultitask.remainingMin}分钟），同时抽空和对方聊天。一心二用：回复要简短，带一点分心或忙碌的痕迹，可以偶尔提到手头的事，但不要赶对方走。` : null,
       justReconciled: emotionResult.justReconciled ? (emotionResult.reconcileReason || '一些矛盾') : null,
       lastMonologue,
     });
@@ -376,6 +449,8 @@ export class ChatService {
         emotionState: emotionResult.emotionState,
         triggeredMinefield: emotionResult.triggeredMinefield?.description || null,
         weather: environment?.weather?.mood || null,
+        busyRemaining: busyMultitask ? busyMultitask.remainingMin : undefined,
+        busyActivity: busyMultitask ? busyMultitask.activity : undefined,
       },
     };
 
@@ -439,17 +514,54 @@ export class ChatService {
     // 13. 分条拟真推送（微信式连发：按情绪延迟 + 条间停顿）
     const segments = replyText.split(/\n+/).map(s => s.trim()).filter(Boolean);
     const msgSegments = segments.length > 0 ? segments : (replyText.trim() ? [replyText.trim()] : []);
-    if (msgSegments.length > 0) {
-      await this._sleep(this._calcReplyDelay(emotionResult.emotionState, justWokenUp, msgSegments[0].length));
-      for (let s = 0; s < msgSegments.length; s++) {
-        const seg = msgSegments[s];
+
+    // 13.1 语音条判定：心情好 + 关系亲近 → 低概率把一条短句变成语音条
+    let voiceInfo = null;
+    if (msgSegments.length > 0 && this._shouldSendVoice({ emotionResult, state, segments: msgSegments })) {
+      const voiceText = this._pickVoiceSegment(msgSegments);
+      if (voiceText) voiceInfo = { text: voiceText };
+    }
+    const textSegments = voiceInfo ? msgSegments.filter(s => s !== voiceInfo.text) : msgSegments;
+
+    if (textSegments.length > 0) {
+      await this._sleep(this._calcReplyDelay(emotionResult.emotionState, justWokenUp, textSegments[0].length, busyMultitask, state.affection));
+      for (let s = 0; s < textSegments.length; s++) {
+        const seg = textSegments[s];
         for (let i = 0; i < seg.length; i += 2) {
           yield { type: 'chunk', data: seg.slice(i, i + 2) };
         }
-        if (s < msgSegments.length - 1) {
+        if (s < textSegments.length - 1) {
           yield { type: 'message_end' };
           yield { type: 'typing', data: { show: true } };
           await this._sleep(600 + Math.floor(Math.random() * 900));
+        }
+      }
+    }
+
+    // 13.2 语音条合成与推送（失败降级为文字补发，不影响主流程）
+    let voiceFailed = false;
+    if (voiceInfo) {
+      if (textSegments.length === 0) {
+        await this._sleep(this._calcReplyDelay(emotionResult.emotionState, justWokenUp, 5, busyMultitask, state.affection));
+      } else {
+        yield { type: 'message_end' };
+        yield { type: 'typing', data: { show: true } };
+        await this._sleep(500 + Math.floor(Math.random() * 800));
+      }
+      try {
+        voiceInfo.filename = await this._synthesizeVoiceMessage({ characterId, text: voiceInfo.text, emotionState: emotionResult.emotionState });
+        voiceInfo.duration = Math.max(1, Math.round(voiceInfo.text.length / 3.5));
+        yield { type: 'voice_message', data: { filename: voiceInfo.filename, duration: voiceInfo.duration } };
+        this.db.saveChatMessage({
+          userId, characterId, role: 'voice',
+          content: JSON.stringify({ f: voiceInfo.filename, d: voiceInfo.duration }),
+        });
+        console.log(`[ChatService] 语音条已推送: "${voiceInfo.text.slice(0, 20)}" (${voiceInfo.duration}s)`);
+      } catch (err) {
+        voiceFailed = true;
+        console.warn(`[ChatService] 语音条合成失败，降级为文字: ${err.message}`);
+        for (let i = 0; i < voiceInfo.text.length; i += 2) {
+          yield { type: 'chunk', data: voiceInfo.text.slice(i, i + 2) };
         }
       }
     }
@@ -459,8 +571,11 @@ export class ChatService {
       yield { type: 'thought', data: thought };
     }
 
-    // 保存 AI 回复
-    this.db.saveChatMessage({ userId, characterId, role: 'assistant', content: replyText, affectionAfter: finalAffection });
+    // 保存 AI 回复（语音条文本单独以 voice 记录入库，这里只存文字部分，避免历史重复展示；TTS 失败降级时存全文）
+    const textOnlyReply = voiceFailed ? replyText : textSegments.join('\n');
+    if (textOnlyReply) {
+      this.db.saveChatMessage({ userId, characterId, role: 'assistant', content: textOnlyReply, affectionAfter: finalAffection });
+    }
 
     // 保存内心独白
     if (thought) {
@@ -523,9 +638,10 @@ export class ChatService {
 
     // 18. 忙碌状态落地（显式标记或合并 AI 判断的结果）
     if (busyInfo) {
-      const busyMinutes = this._calcBusyDuration(busyInfo.activity);
-      this.db.setBusyState(userId, characterId, busyInfo.activity, busyMinutes);
-      console.log(`[ChatService] 角色进入忙碌状态: ${busyInfo.activity}, ${busyMinutes}分钟`);
+      const safeActivity = this._sanitizeActivity(busyInfo.activity);
+      const busyMinutes = this._calcBusyDuration(safeActivity);
+      this.db.setBusyState(userId, characterId, safeActivity, busyMinutes);
+      console.log(`[ChatService] 角色进入忙碌状态: ${safeActivity}, ${busyMinutes}分钟`);
     }
 
     yield { type: 'done', data: null };
@@ -560,7 +676,7 @@ export class ChatService {
 
 用严格 JSON 回复，不要任何其他文字：
 {"send_photo": true/false, "photo_type": "selfie|activity|selfie_grid", "busy": true/false, "activity": "睡觉|开会|上课|洗澡|吃饭|出门|运动|其他", "reason": "简短原因"}`,
-        messages: [{ role: 'user', content: this._buildJudgmentContext(character, replyText, timeStr, weatherStr) }],
+        messages: [{ role: 'user', content: this._buildJudgmentContext(userId, characterId, character, replyText, timeStr, weatherStr) }],
         temperature: 0.0,
       });
 
@@ -587,6 +703,18 @@ export class ChatService {
     const contextLines = recent5.map(m => `${m.role === 'user' ? '对方' : character.name}: ${m.content.slice(0, 100)}`);
     contextLines.push(`${character.name}: ${replyText.slice(0, 200)}`);
     return `当前时间：${timeStr}\n当前天气：${weatherStr}\n\n最近对话：\n${contextLines.join('\n')}`;
+  }
+
+  /**
+   * 清洗活动名（来自 LLM 判断/回复标记，不可信）：
+   * 去换行（防 prompt 注入换行逃逸）、剔除括号类符号（防伪造指令段）、截断 12 字符（防爆破）
+   */
+  _sanitizeActivity(name) {
+    return String(name || '')
+      .split('\n')[0].split('\r')[0]
+      .replace(/[\[\]{}<>`|【】《》]/g, '')
+      .trim()
+      .slice(0, 12);
   }
 
   /**
@@ -673,9 +801,65 @@ export class ChatService {
     return new Promise(r => setTimeout(r, ms));
   }
 
-  /** 按情绪 + 长度计算首条回复延迟（"正在输入..."期间），范围上限 8s */
-  _calcReplyDelay(emotionState, justWokenUp, length) {
+  /**
+   * 语音条触发判定：心情好 + 关系亲近 + 存在合适短句时，低概率发语音（模拟熟人之间的语音习惯）
+   */
+  _shouldSendVoice({ emotionResult, state, segments }) {
+    if (!this.multimodalService) return false;
+    if (emotionResult.moodLevel < 20) return false;      // 心情好才想发语音
+    if ((state.affection || 0) < 40) return false;       // 不够熟不发语音
+    if (!segments.some(s => s.length >= 2 && s.length <= 25)) return false;
+    return Math.random() < 0.15;
+  }
+
+  /** 从分条中挑一条适合转语音的短句 */
+  _pickVoiceSegment(segments) {
+    const eligible = segments.filter(s => s.length >= 2 && s.length <= 25);
+    if (eligible.length === 0) return null;
+    return eligible[Math.floor(Math.random() * eligible.length)];
+  }
+
+  /** 合成语音条并落盘 public/voices/，返回文件名（音色/情绪语气由 MultimodalService 按角色档案处理） */
+  async _synthesizeVoiceMessage({ characterId, text, emotionState }) {
+    const audio = await this.multimodalService.synthesizeSpeech({ text, characterId, emotionState });
+    const dir = path.join('public', 'voices');
+    fs.mkdirSync(dir, { recursive: true });
+    const filename = `voice_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.mp3`;
+    fs.writeFileSync(path.join(dir, filename), audio);
+    return filename;
+  }
+
+  /**
+   * 敷衍消息拟真判定：超短应答字消息（哦/嗯/呵，情感分析已给出负权重）低概率只回敷衍短句，跳过 LLM
+   * 心情越差概率越高；心情好时永不触发（心情好的人不计较这些）；不连续敷衍（会像程序坏掉）
+   */
+  _shouldReplyPerfunctory({ message, weight, emotionResult, userId, characterId }) {
+    if (message.length > 6) return false;                 // 只针对超短消息
+    if (weight > -0.3) return false;                      // 只针对负面/敷衍消息
+    if (emotionResult.triggeredMinefield) return false;   // 雷区走完整愤怒管线
+    if (emotionResult.isApology) return false;            // 道歉认真对待
+    if (emotionResult.justReconciled) return false;       // 刚和好要认真回应
+    if (emotionResult.moodLevel >= 20) return false;      // 心情好时不敷衍
+
+    // 上一条 AI 回复已经是敷衍短句 → 本轮正常回复
+    const recent = this.db.getRecentChatHistory(userId, characterId, 2);
+    const lastAi = recent.find(m => m.role === 'assistant');
+    if (lastAi && lastAi.content.length <= 3) return false;
+
+    const probability = emotionResult.moodLevel < -20 ? 0.4 : 0.25;
+    return Math.random() < probability;
+  }
+
+  /** 按情绪 + 长度计算首条回复延迟（"正在输入..."期间），范围上限 8s；忙碌一心二用时按好感分档放慢 */
+  _calcReplyDelay(emotionState, justWokenUp, length, busyMultitask = null, affection = 50) {
     if (justWokenUp) return 4000 + Math.floor(Math.random() * 4000);
+    // 忙碌一心二用：手头有事回复天然变慢，但好感越高越舍得抽身秒回
+    if (busyMultitask) {
+      const [min, max] = affection >= 60 ? [2000, 5000] : affection >= 30 ? [5000, 9000] : [8000, 14000];
+      let delay = min + Math.floor(Math.random() * (max - min));
+      if (length > 20) delay += Math.ceil((length - 20) / 10) * 100;
+      return Math.min(15000, delay);
+    }
     // 生气"已读不回"：30% 概率晾对方 10-16 秒才回，模拟憋着气不想理
     if (emotionState === 'angry' && Math.random() < 0.3) {
       return 10000 + Math.floor(Math.random() * 6000);

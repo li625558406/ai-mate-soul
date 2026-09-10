@@ -10,7 +10,7 @@ export class DynamicPromptBuilder {
     offlineNarrative, offlineTimeline, currentActivity, personalityStage,
     mirrorWords = [], environmentPrompt, emotionState, moodLevel = 0,
     triggeredMinefield,
-    currentTimeDescription, lifeStagePrompt, currentAge, wokenUpContext,
+    currentTimeDescription, lifeStagePrompt, currentAge, wokenUpContext, busyMultitaskContext,
     scheduleSegment, pendingPlans = [], activeEmotionEvent,
     justReconciled, lastMonologue,
   }) {
@@ -81,6 +81,10 @@ export class DynamicPromptBuilder {
 
     if (wokenUpContext) {
       sections.push(`[特殊状态] ${wokenUpContext}`);
+    }
+
+    if (busyMultitaskContext) {
+      sections.push(`[特殊状态] ${busyMultitaskContext}`);
     }
 
     if (justReconciled) {

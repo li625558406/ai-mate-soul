@@ -89,7 +89,7 @@ const chatService = new ChatService({
   characterManager, emotionEngine, promptBuilder, llmProvider, db,
   memoryService, factExtractor, timeService, growthService,
   emotionStateMachine, environmentService, lifecycleService,
-  defaultProvider, planExtractor,
+  defaultProvider, planExtractor, multimodalService,
 });
 
 const voiceCallService = new VoiceCallService({
