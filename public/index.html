@@ -817,7 +817,14 @@ async function loadChatHistory(uid, characterId) {
           div = appendMsg('photo', p.f, `📸 ${p.c || '照片'}`, msgTime);
         } catch { div = appendMsg(msg.role, msg.content, null, msgTime); }
       } else {
-        div = appendMsg(msg.role, msg.content, null, msgTime);
+        // assistant 多条消息按换行拆成独立气泡
+        const lines = String(msg.content || '').split('\n').map(s => s.trim()).filter(Boolean);
+        div = null;
+        for (let li = 0; li < lines.length; li++) {
+          const el = appendMsg(msg.role, lines[li], null, li === 0 ? msgTime : null);
+          if (li === 0) div = el;
+        }
+        if (!div) div = appendMsg(msg.role, msg.content, null, msgTime);
       }
       // 恢复内心独白（默认显示）
       if (msg.role === 'assistant') {
@@ -962,8 +969,10 @@ async function sendMessage() {
   document.getElementById('sendBtn').disabled = true;
 
   const uid = document.getElementById('userId').value;
-  const aiMsgEl = appendMsg('ai', '');
-  let fullText = '';
+  const aiMsgEl = appendMsg('ai', ''); // 第一条气泡（thought/胶囊挂载点）
+  let currentBubble = aiMsgEl;         // 当前流式气泡
+  let segText = '';                    // 当前气泡文本
+  let fullText = '';                   // 完整回复（跨气泡）
   let lastMeta = null;
   const chatCharId = currentCharacterId; // 记录发送时的角色ID
 
@@ -1011,11 +1020,22 @@ async function sendMessage() {
             typing.textContent = '对方正在输入...';
             typing.classList.remove('typing-thinking');
           } else if (currentEvent === 'chunk') {
-            fullText += JSON.parse(data);
-            aiMsgEl.querySelector('.bubble').textContent = fullText;
+            const piece = JSON.parse(data);
+            segText += piece;
+            fullText += piece;
+            currentBubble.querySelector('.bubble').textContent = segText;
             lastAiReply = fullText;
             typing.classList.remove('show');
             scrollBottom();
+          } else if (currentEvent === 'message_end') {
+            // 当前气泡收束，下一条 chunk 开新气泡
+            segText = '';
+            currentBubble = appendMsg('ai', '');
+            scrollBottom();
+          } else if (currentEvent === 'typing') {
+            // 条间停顿：重新唤起"正在输入"指示器
+            typing.textContent = '对方正在输入...';
+            typing.classList.add('show');
           } else if (currentEvent === 'error') {
             // 后端 error 事件 data 可能是纯字符串（ChatService yield）或 {error} 对象（index.js catch）
             // JSON.parse 兜底：parse 失败时回退用原文，避免抛错被外层 catch 误报成 [连接失败]
