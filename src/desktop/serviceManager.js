@@ -75,7 +75,10 @@ function _spawn(rootDir) {
   child.on('error', (err) => {
     if (spawnBroken || stopping) return;
     spawnBroken = true;
-    emitState('failed', { log: `spawn 失败: ${err.message}\n${getLogTail()}` });
+    // 压入日志尾部，让 main.js 兜底超时弹窗里 getLogTail() 能看到 spawn 失败原因
+    logTail.push(`spawn 失败: ${err.message}`);
+    if (logTail.length > 50) logTail.shift();
+    emitState('failed', { log: getLogTail() });
   });
 }
 
