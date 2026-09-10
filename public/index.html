@@ -1652,7 +1652,14 @@ socket.on('voice_call:audio', (base64Chunk) => {
     buffer.getChannelData(0).set(float32);
     const source = playbackContext.createBufferSource();
     source.buffer = buffer;
-    source.connect(playbackContext.destination);
+    // 通话下行音频经分析器接输出：振幅驱动形象嘴型
+    if (!playbackContext._analyser) {
+      const an = playbackContext.createAnalyser();
+      an.fftSize = 512;
+      an.connect(playbackContext.destination);
+      playbackContext._analyser = an;
+    }
+    source.connect(playbackContext._analyser);
 
     // 时间调度：确保每个 chunk 在前一个结束后才开始播放，避免重叠
     const currentTime = playbackContext.currentTime;
@@ -1661,6 +1668,7 @@ socket.on('voice_call:audio', (base64Chunk) => {
     }
     source.start(nextPlayTime);
     nextPlayTime += buffer.duration;
+    trackAmplitude(playbackContext._analyser);
   } catch (e) {
     // 忽略播放错误，保持通话不中断
   }
@@ -1695,6 +1703,10 @@ socket.on('voice_call:error', ({ error }) => {
 });
 
 socket.on('voice_call:ended', ({ duration }) => {
+  // 挂断即停嘴型：取消振幅循环并广播闭嘴（ampOwner 置空，避免陈旧持有者干扰后续守卫）
+  cancelAnimationFrame(ampRaf);
+  ampOwner = null;
+  broadcastAvatar({ type: 'amplitude', v: 0 });
   cleanupCallUI();
   refreshState();
   appendMsg('system', `语音通话已结束（${formatDuration(duration)}）`);
