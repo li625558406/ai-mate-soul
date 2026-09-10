@@ -6,7 +6,7 @@ const SETTINGS_PATH = path.resolve(process.cwd(), 'data', 'settings.json');
 const DEFAULT_SETTINGS = {
   chat: { baseURL: '', apiKey: '', model: '' },
   image: { baseURL: '', apiKey: '', model: '' },
-  tts: { baseURL: '', apiKey: '' },
+  tts: { apiKey: '', resourceId: 'seed-tts-2.0' },
   video: { baseURL: '', apiKey: '', model: '', maxDuration: 5 },
 };
 
@@ -41,6 +41,9 @@ export class SettingsManager {
         this._data.chat = { baseURL: p.baseURL || '', apiKey: p.apiKey || '', model: p.model || '' };
       }
     }
+
+    // Migrate: TTS 从 DashScope 切到火山豆包，baseURL 字段已废弃
+    if (this._data.tts?.baseURL !== undefined) delete this._data.tts.baseURL;
   }
 
   _save() {
