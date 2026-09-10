@@ -23,6 +23,7 @@
   let baseW = 0, baseH = 0;                          // 模型未缩放时的自然尺寸（fit 基准，防止重复缩放复利）
   let mouth = 0, mouthTarget = 0, lastAmpAt = 0;     // 嘴型当前值/目标值/最近振幅时间
   let emotionParams = null, emotionUntil = 0;        // 情绪参数与失效时间
+  let paused = false;                                // 隐藏/降级时置 true：tick 空转短路（渲染循环保留，shared ticker 不能全局 stop）
 
   function fit() {
     if (!model || !app || !baseW || !baseH) return;
@@ -38,7 +39,7 @@
 
   // 每 tick 把嘴型/情绪参数覆写到模型（LOW 优先级保证在动作更新之后执行）
   function tick() {
-    if (!model) return;
+    if (paused || !model) return;
     if (Date.now() - lastAmpAt > 350) mouthTarget = 0;   // 振幅流断了自然闭嘴
     mouth += (mouthTarget - mouth) * 0.35;                // 平滑插值防抖
     const core = model.internalModel.coreModel;
@@ -55,13 +56,17 @@
       mouthTarget = Math.min(1, Math.max(0, Number.isFinite(msg.v) ? msg.v : 0));
       lastAmpAt = Date.now();
     } else if (msg.type === 'emotion' && typeof msg.state === 'string') {
-      emotionParams = EMOTION_PARAMS[msg.state] || null;
+      // 用 hasOwn 防原型链污染（对抗：msg.state='constructor'/'__proto__' 等取到 Object.prototype）
+      emotionParams = Object.hasOwn(EMOTION_PARAMS, msg.state) ? EMOTION_PARAMS[msg.state] : null;
       emotionUntil = Date.now() + 10 * 60_000; // 情绪持续 10 分钟后回 idle
     }
   }
 
   // 挂载到指定 canvas；失败返回 false 并隐藏容器（降级链，不阻塞聊天）
   async function mount(canvasEl) {
+    // 重入保护：已就绪直接成功；上次 mount 留下半成品 app 时拒绝叠加创建
+    if (ready) return true;
+    if (app) return false;
     canvas = canvasEl;
     try {
       const PIXI = window.PIXI;
@@ -70,7 +75,8 @@
       const w = canvasEl.clientWidth || 300;
       const h = canvasEl.clientHeight || 440;
       app = new PIXI.Application({ view: canvas, width: w, height: h, backgroundAlpha: 0, autoDensity: true, resolution: devicePixelRatio || 1 });
-      model = await PIXI.live2d.Live2DModel.from(MODEL_URL, { autoInteract: true });
+      // pixi 7.4.3 主 bundle 不含 InteractionManager，autoInteract 依赖的 plugins.interaction 不存在会静默失效，故不传
+      model = await PIXI.live2d.Live2DModel.from(MODEL_URL);
       app.stage.addChild(model);
       // 记录自然尺寸（此刻 scale=1），后续 fit 用固定基准，避免 ResizeObserver 反复缩放复利
       baseW = model.width;
@@ -78,18 +84,34 @@
       fit();
       // canvas 尺寸变化时同步 renderer 并重新布局（主窗口与小窗通用）
       // 读 clientWidth/clientHeight（CSS 像素）：autoDensity 下 canvas.width 是物理像素，直接用会越调越大
+      // 尺寸为 0（容器隐藏/降级）时置 paused，tick 空转短路，避免空转渲染浪费 GPU
       new ResizeObserver(() => {
-        const cw = canvas.clientWidth, chh = canvas.clientHeight;
-        if (cw && chh) { app.renderer.resize(cw, chh); fit(); }
+        const w = canvas.clientWidth, h = canvas.clientHeight;
+        paused = (w === 0 || h === 0);
+        if (!paused) { app.renderer.resize(w, h); fit(); }
       }).observe(canvas);
-      app.ticker.add(tick, null, PIXI.UPDATE_PRIORITY.LOW);
+      // pixi7 无 InteractionManager，autoInteract 失效：窗口级 mousemove 手动换算焦点
+      // 监听在 window 上，pointer-events:none 的 canvas 也能收到；事件坐标减 canvas 偏移即模型局部坐标
+      function onMove(e) {
+        if (!model) return;
+        const rect = canvas.getBoundingClientRect();
+        model.focus(e.clientX - rect.left, e.clientY - rect.top);
+      }
+      window.addEventListener('mousemove', onMove);
       const ch = new BroadcastChannel(CHANNEL);
       ch.onmessage = (e) => handleMsg(e.data);
+      // 关键：必须与 pixi-live2d-display 的动作更新同一 ticker（Ticker.shared），
+      // LOW 优先级保证在 motionManager.update 之后执行，否则参数会被动作同帧冲掉
+      PIXI.Ticker.shared.add(tick, null, PIXI.UPDATE_PRIORITY.LOW);
       ready = true;
       return true;
     } catch (err) {
       console.warn('[avatar] 形象加载失败，降级为静态参考图:', err.message);
+      // 先取容器引用再销毁（destroy 后 canvas 若脱离 DOM，closest 拿不到容器）
       const box = canvas.closest('.avatar-box');
+      // removeView=false：渲染循环照停（彻底停渲染），但 canvas 节点保留给隐藏的容器
+      if (app) { try { app.destroy(false, { children: true, texture: true }); } catch {} app = null; }
+      paused = true;
       if (box) box.style.display = 'none';
       return false;
     }
