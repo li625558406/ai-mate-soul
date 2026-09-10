@@ -266,6 +266,13 @@ body.view-chat #homePane { display:none; }
 .lightbox.open { display:flex; }
 .lightbox img { max-width:95vw; max-height:90vh; border-radius:10px; object-fit:contain; }
 
+/* ===== Live2D 形象区 ===== */
+/* 绝对定位挂在聊天区右下角：模型为头部特写、canvas 透明，覆盖消息流右缘可接受；
+   z-index=5 只压过普通内容，低于面板/弹窗/通话(99+)；保留指针事件供鼠标视线追踪。
+   选择器带 #chatPane 前缀：压过下方 `#chatPane > *:not(.bg-video-layer)` 的 position/z-index:1 规则（同特异性靠源顺序取胜） */
+#chatPane .avatar-box { position:absolute; right:12px; bottom:76px; width:300px; height:440px; z-index:5; overflow:hidden; }
+@media (max-width: 899px) { #chatPane .avatar-box { display:none; } } /* 手机全宽聊天下 300px 遮挡过重，小窗方案（Task 6）承接 */
+
 ::-webkit-scrollbar { width:6px; }
 ::-webkit-scrollbar-track { background:transparent; }
 ::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
@@ -371,6 +378,10 @@ body.view-chat #homePane { display:none; }
       <input id="msgInput" placeholder="输入消息..." disabled>
       <button id="sendBtn" disabled onclick="sendMessage()">发送</button>
       <button class="btn-icon" title="朗读最后一条回复" id="ttsBtn" onclick="playTTS()" disabled>&#9835;</button>
+    </div>
+    <!-- Live2D 形象区：绝对定位挂聊天区右下角（不挤压消息流；加载失败由 avatar.js 自动隐藏降级） -->
+    <div class="avatar-box" id="avatarBox">
+      <canvas id="avatarCanvas" style="width:100%;height:100%;display:block;"></canvas>
     </div>
   </main>
 </div>
@@ -2667,6 +2678,15 @@ async function saveSettings() {
   }
   btn.disabled = false; btn.textContent = '保存并生效';
 }
+</script>
+
+<!-- Live2D 形象：Core 必须在 cubism4 之前加载；avatar.js 置底后单独挂载（DOM 已就绪） -->
+<script src="/live2d/live2dcubismcore.min.js"></script>
+<script src="/live2d/vendor/pixi.min.js"></script>
+<script src="/live2d/vendor/cubism4.min.js"></script>
+<script src="/live2d/avatar.js"></script>
+<script>
+  Avatar.mount(document.getElementById('avatarCanvas'));
 </script>
 </body>
 </html>
