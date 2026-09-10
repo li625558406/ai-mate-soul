@@ -499,16 +499,19 @@ app.post('/api/chat', async (req, res) => {
 
 // --- TTS ---
 app.post('/api/tts', async (req, res) => {
-  const { text, characterId } = req.body;
+  const { text, characterId, speaker } = req.body;
   if (!text) return res.status(400).json({ error: '缺少 text' });
   if (!characterId) return res.status(400).json({ error: '缺少 characterId' });
+  if (speaker !== undefined && (typeof speaker !== 'string' || !speaker.trim() || speaker.length > 128)) {
+    return res.status(400).json({ error: 'speaker 非法' });
+  }
 
   try {
     // 从数据库获取当前情绪状态
     const uid = req.body.userId || 'test_user';
     const state = db.getCharacterState(uid, characterId);
     const emotionState = state?.emotion_state || 'calm';
-    const audio = await multimodalService.synthesizeSpeech({ text, characterId, emotionState });
+    const audio = await multimodalService.synthesizeSpeech({ text, characterId, emotionState, speaker: speaker?.trim() });
     res.setHeader('Content-Type', 'audio/mpeg');
     res.setHeader('Content-Length', audio.length);
     res.send(audio);
