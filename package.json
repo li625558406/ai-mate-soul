@@ -26,6 +26,8 @@
     "yauzl": "^3.3.0"
   },
   "devDependencies": {
-    "electron": "^44.3.0"
+    "electron": "^44.3.0",
+    "pixi-live2d-display": "^0.4.0",
+    "pixi.js": "^7.4.3"
   }
 }

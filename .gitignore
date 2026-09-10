@@ -13,3 +13,7 @@ public/voices/
 # 运行时生成媒体
 public/photos/
 public/videos/
+
+# Live2D 专有许可资产不入库（见设计文档第 8 节）
+public/live2d/live2dcubismcore.min.js
+public/live2d/models/
