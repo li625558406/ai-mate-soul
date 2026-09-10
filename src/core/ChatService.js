@@ -158,36 +158,72 @@ export class ChatService {
       emotionResult.coldWarEndAt,
     );
 
-    // 4. 冷战模式：返回预设短语，不调用 LLM
+    // 4. 冷战模式：真诚道歉可提前和解；否则返回预设短语，不调用 LLM
     if (emotionResult.isColdWar) {
-      const remainingMin = this.emotionStateMachine.getColdWarRemainingMinutes(emotionResult.coldWarEndAt);
-      const presetResponse = this.emotionStateMachine.getColdWarResponse(character.cold_war_responses);
+      // A3a: 真诚道歉判定（道歉词 + 消息有诚意长度/正面情绪 + 非敷衍句式）
+      const PERFUNCTORY = /(行了吧|行了没|够了吗|随便你|烦不烦)/;
+      const sincereApology = this.emotionStateMachine.isApologyMessage(message)
+        && (message.length >= 8 || weight >= 0.3)
+        && !PERFUNCTORY.test(message);
 
-      yield {
-        type: 'meta',
-        data: {
-          characterName: character.name,
-          affection: state.affection,
-          mood: 'cold_war',
-          moodDescription: '冷战/拒绝沟通',
-          emotionLabel: 'cold_war',
-          emotionState: 'cold_war',
-          moodLevel: emotionResult.moodLevel,
-          coldWarRemaining: remainingMin,
-          triggeredMinefield: emotionResult.triggeredMinefield?.description || null,
-          xpGained: 0,
-        },
-      };
+      if (sincereApology) {
+        const cwReason = state.cold_war_reason || '一些矛盾';
+        const reconciledMood = Math.min(0, emotionResult.moodLevel + 30);
+        this.db.reconcileColdWar(userId, characterId, reconciledMood, 'uneasy');
+        emotionResult.isColdWar = false;
+        emotionResult.emotionState = 'uneasy';
+        emotionResult.moodLevel = reconciledMood;
+        emotionResult.justReconciled = true;
+        emotionResult.reconcileReason = cwReason;
+        console.log(`[ChatService] 真诚道歉，提前和解，心情恢复至 ${reconciledMood}`);
+        // 落入正常管线，由 LLM 生成带"刚和好"语气的回复
+      } else {
+        // B6: 记录/刷新触雷原因 + 异步生成本次冷战专属短语（不阻塞回复）
+        const cwReason = emotionResult.triggeredMinefield?.description
+          || state.cold_war_reason || '一些矛盾';
+        const existingPhrases = this.db.getColdWarPhrases(userId, characterId);
+        this.db.updateColdWarMeta(userId, characterId, cwReason,
+          existingPhrases.length ? JSON.stringify(existingPhrases) : null);
+        this._ensureColdWarPhrases(userId, characterId, character, cwReason);
 
-      yield { type: 'chunk', data: presetResponse };
-      yield { type: 'done', data: null };
+        // 优先消费动态短语，用尽回退角色预设池
+        let presetResponse = null;
+        const cwPhrases = this.db.getColdWarPhrases(userId, characterId);
+        if (cwPhrases.length > 0) {
+          presetResponse = cwPhrases[0];
+          this.db.consumeColdWarPhrase(userId, characterId);
+        }
+        if (!presetResponse) {
+          presetResponse = this.emotionStateMachine.getColdWarResponse(character.cold_war_responses);
+        }
+        const remainingMin = this.emotionStateMachine.getColdWarRemainingMinutes(emotionResult.coldWarEndAt);
 
-      // 保存用户消息和预设回复
-      this.db.saveChatMessage({ userId, characterId, role: 'user', content: message, affectionAfter: state.affection });
-      this.db.saveChatMessage({ userId, characterId, role: 'assistant', content: presetResponse, affectionAfter: state.affection });
-      this.db.incrementChatCount(userId, characterId);
-      this.db.updateLastSeenAt(userId, characterId);
-      return;
+        yield {
+          type: 'meta',
+          data: {
+            characterName: character.name,
+            affection: state.affection,
+            mood: 'cold_war',
+            moodDescription: '冷战/拒绝沟通',
+            emotionLabel: 'cold_war',
+            emotionState: 'cold_war',
+            moodLevel: emotionResult.moodLevel,
+            coldWarRemaining: remainingMin,
+            triggeredMinefield: emotionResult.triggeredMinefield?.description || null,
+            xpGained: 0,
+          },
+        };
+
+        yield { type: 'chunk', data: presetResponse };
+        yield { type: 'done', data: null };
+
+        // 保存用户消息和预设回复
+        this.db.saveChatMessage({ userId, characterId, role: 'user', content: message, affectionAfter: state.affection });
+        this.db.saveChatMessage({ userId, characterId, role: 'assistant', content: presetResponse, affectionAfter: state.affection });
+        this.db.incrementChatCount(userId, characterId);
+        this.db.updateLastSeenAt(userId, characterId);
+        return;
+      }
     }
 
     // 5. 正常模式：完整处理管线（weight/label 已在步骤 3 计算）
@@ -278,6 +314,7 @@ export class ChatService {
       lifeStagePrompt: this.lifecycleService.getLifeStagePrompt(state.interaction_days || 1),
       currentAge,
       wokenUpContext: justWokenUp ? `你刚才正在${justWokenUp.activity}，被对方连续发消息吵醒了。你现在很不开心，语气应该明显变冷、变短。表现出被吵醒的烦躁。` : null,
+      justReconciled: emotionResult.justReconciled ? (emotionResult.reconcileReason || '一些矛盾') : null,
     });
 
     // 10. 发送 meta
@@ -567,6 +604,53 @@ photo_type 取值：
       default:
         return 30 + Math.floor(Math.random() * 30); // 默认30-60分钟
     }
+  }
+
+  /**
+   * 异步生成冷战专属短语（不阻塞回复，失败静默回退预设池）
+   */
+  _ensureColdWarPhrases(userId, characterId, character, reason) {
+    Promise.resolve().then(async () => {
+      try {
+        if (this.db.getColdWarPhrases(userId, characterId).length > 0) return;
+        const resp = await this.llmProvider.chat(this.defaultProvider, {
+          systemPrompt: `你是「${character.name}」，${character.base_personality}。你因为「${reason}」在和对方冷战。生成5条你冷战期间可能发的冷淡短语，每条一行，不要编号，不要引号。要符合你的性格，语气从敷衍到带刺不等。`,
+          messages: [{ role: 'user', content: '生成冷战短语' }],
+          temperature: 0.9,
+          maxTokens: 200,
+        });
+        const phrases = resp.split('\n')
+          .map(s => s.trim().replace(/^[-\d.、\s]+/, ''))
+          .filter(s => s && s.length > 0 && s.length <= 50)
+          .slice(0, 5);
+        if (phrases.length > 0) {
+          this.db.updateColdWarMeta(userId, characterId, reason, JSON.stringify(phrases));
+          console.log(`[ChatService] 冷战短语已生成 ${phrases.length} 条`);
+        }
+      } catch (err) {
+        console.warn(`[ChatService] 冷战短语生成失败（回退预设池）: ${err.message}`);
+      }
+    });
+  }
+
+  _sleep(ms) {
+    return new Promise(r => setTimeout(r, ms));
+  }
+
+  /** 按情绪 + 长度计算首条回复延迟（"正在输入..."期间），范围上限 8s */
+  _calcReplyDelay(emotionState, justWokenUp, length) {
+    if (justWokenUp) return 4000 + Math.floor(Math.random() * 4000);
+    const RANGES = {
+      joyful: [800, 2000],
+      happy: [1000, 2000],
+      calm: [1000, 2500],
+      uneasy: [2500, 4000],
+      angry: [3500, 6000],
+    };
+    const [min, max] = RANGES[emotionState] || RANGES.calm;
+    let delay = min + Math.random() * (max - min);
+    if (length > 20) delay += Math.ceil((length - 20) / 10) * 100;
+    return Math.min(8000, Math.round(delay));
   }
 
   _postChatAsync({ userId, characterId, userMessage, aiResponse, emotionLabel }) {

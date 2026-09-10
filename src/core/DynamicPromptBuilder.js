@@ -12,6 +12,7 @@ export class DynamicPromptBuilder {
     triggeredMinefield,
     currentTimeDescription, lifeStagePrompt, currentAge, wokenUpContext,
     scheduleSegment, pendingPlans = [], activeEmotionEvent,
+    justReconciled,
   }) {
     const sections = [];
 
@@ -76,6 +77,10 @@ export class DynamicPromptBuilder {
 
     if (wokenUpContext) {
       sections.push(`[特殊状态] ${wokenUpContext}`);
+    }
+
+    if (justReconciled) {
+      sections.push(`[特殊状态] 你们刚刚和好——之前因为「${justReconciled}」在冷战，对方真诚道歉了。你心里还有点委屈，但已经软化了。语气带点别扭的温柔：不要立刻热情如初，但也不再冰冷。`);
     }
 
     return sections.join('\n\n');
@@ -259,7 +264,8 @@ export class DynamicPromptBuilder {
     格式：[去忙:活动名:分钟数]（分钟数随意填，系统会根据活动类型+当前时间自动计算真实时长）
     例如：[去忙:睡觉:30] 或 [去忙:洗澡:15]
     注意：标记必须独占一行。加上标记意味着你接下来一段时间不会回复消息。
-    绝对不要加标记的情况：只是有点困但还在聊天、提议改天再聊、提到某事但不代表现在去做、还在等对方回复。`;
+    绝对不要加标记的情况：只是有点困但还在聊天、提议改天再聊、提到某事但不代表现在去做、还在等对方回复。
+11. [分条消息] 如果回复有多句话，用换行把每句话分成独立的一行，像发微信一样一条一条发，每条尽量不超过30个字。心情好可以发2-4条，心情差只发1条。`;
   }
 
   _buildOfflineNarrative(narrative, timeline) {
