@@ -110,6 +110,9 @@ export class MultimodalService {
         chunks.push(Buffer.from(seg.data, 'base64'));
       // 20000000 为火山成功结束帧（OK，data 为 null），不算错误
       } else if (seg.code !== undefined && seg.code !== 0 && seg.code !== 20000000) {
+        if (seg.code === 55000000) {
+          throw new Error('音色 ID 无效或与资源不匹配：请检查角色档案的 voice_preset');
+        }
         throw new Error(`火山 TTS 分片错误 code=${seg.code}: ${seg.message || ''}`);
       }
     }
