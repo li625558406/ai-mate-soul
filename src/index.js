@@ -8,6 +8,7 @@ import { createServer as createHttpServer } from 'http';
 import { createServer as createHttpsServer } from 'https';
 import selfsigned from 'selfsigned';
 import os from 'os';
+import crypto from 'crypto';
 import { Server as SocketIOServer } from 'socket.io';
 
 import { DatabaseManager } from './database/DatabaseManager.js';
@@ -785,12 +786,6 @@ app.post('/api/settings/test', async (req, res) => {
   const model = (section.model || stored.model || '').trim();
   if (!apiKey) return res.json({ ok: false, message: 'API Key 未配置' });
 
-  const TTS_URL = 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation';
-  // DashScope 的 Base URL 只填主机（如 https://dashscope.aliyuncs.com）时，自动补全 API 路径
-  const dashscopeUrl = (base, fallback) => {
-    if (!base) return fallback;
-    return /\/api\//.test(base) ? base : `${base}/api/v1/services/aigc/multimodal-generation/generation`;
-  };
   try {
     if (kind === 'chat') {
       if (!baseURL) return res.json({ ok: false, message: 'Base URL 未配置' });
@@ -819,19 +814,35 @@ app.post('/api/settings/test', async (req, res) => {
     }
 
     if (kind === 'tts') {
-      const r = await fetch(dashscopeUrl(baseURL, TTS_URL), {
+      // 火山单向流式 TTS 探测：发一条最短合成请求（'你好' 两个字，成本可忽略）
+      const resourceId = (section.resourceId || stored.resourceId || 'seed-tts-2.0').trim();
+      const r = await fetch('https://openspeech.bytedance.com/api/v3/tts/unidirectional', {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        headers: {
+          'X-Api-Key': apiKey,
+          'X-Api-Resource-Id': resourceId,
+          'X-Api-Request-Id': crypto.randomUUID(),
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
-          model: 'qwen3-tts-instruct-flash',
-          input: { text: '你好', voice: 'Cherry', language_type: 'Chinese' },
+          req_params: { text: '你好', speaker: 'zh_female_vv_uranus_bigtts', audio_params: { format: 'mp3', sample_rate: 24000 } },
         }),
       });
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) return res.json({ ok: false, message: `HTTP ${r.status}: ${JSON.stringify(data).slice(0, 120)}` });
-      return data?.output?.audio?.url
-        ? res.json({ ok: true, message: 'Key 有效，测试语音合成成功' })
-        : res.json({ ok: false, message: `响应异常: ${JSON.stringify(data).slice(0, 120)}` });
+      if (r.status === 401) return res.json({ ok: false, message: '鉴权失败(401)，Key 无效' });
+      if (r.status === 403) {
+        const body = await r.text().catch(() => '');
+        let j = {}; try { j = JSON.parse(body); } catch { /* 非 JSON 响应，忽略 */ }
+        const code = j?.header?.code, msg = j?.header?.message || '';
+        if (code === 45000030 || /not granted/i.test(msg)) {
+          return res.json({ ok: false, message: 'Key 有效但资源未开通：请在火山控制台开通「豆包语音合成大模型 2.0」' });
+        }
+        return res.json({ ok: false, message: `HTTP 403: ${msg || body.slice(0, 120)}` });
+      }
+      if (!r.ok) {
+        const body = await r.text().catch(() => '');
+        return res.json({ ok: false, message: `HTTP ${r.status}: ${body.slice(0, 120)}` });
+      }
+      return res.json({ ok: true, message: 'Key 有效，火山 TTS 可用' });
     }
 
     if (kind === 'video') {
@@ -965,9 +976,9 @@ const onHttpListening = () => {
   }
   console.log(`  LLM: ${llmProvider.getProviderNames().join(', ') || '未配置 (请在 Web 设置页配置)'}`);
   console.log(`  角色: ${characterManager.listCharacters().map(c => c.name).join(', ')}`);
-  console.log(`  TTS: DashScope Qwen3-TTS${settingsManager.getRaw().tts.apiKey ? '' : ' (未配置API Key)'}`);
+  console.log(`  TTS: 火山豆包语音 seed-tts-2.0${settingsManager.getRaw().tts.apiKey ? '' : ' (未配置API Key)'}`);
   console.log(`  Socket.IO: 已启用`);
-  console.log(`  Voice Call: DashScope Qwen-Omni-Realtime${settingsManager.getRaw().tts.apiKey ? '' : ' (未配置API Key)'}`);
+  console.log(`  Voice Call: 火山豆包实时语音 Seeduplex${settingsManager.getRaw().tts.apiKey ? '' : ' (未配置API Key)'}`);
   console.log(`  Image Gen: Wanx 2.7 Image Pro${settingsManager.getRaw().image.apiKey ? '' : ' (未配置API Key)'}`);
   console.log(`  Video Gen: Ark Seedance${settingsManager.getRaw().video.apiKey ? '' : ' (未配置API Key)'}`);
   console.log(`  日程规划: 每日 ${SCHEDULE_CRON_HOUR}:${String(SCHEDULE_CRON_MINUTE).padStart(2, '0')}`);
