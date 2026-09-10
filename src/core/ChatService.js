@@ -141,12 +141,14 @@ export class ChatService {
       }
     }
 
-    // 3. 情绪状态机处理
+    // 3. 情感分析 + 情绪状态机（心情唯一写入点：weight 传入状态机统一计算）
+    const { weight, label } = this.emotionEngine.analyze(message);
     const emotionResult = this.emotionStateMachine.process({
       state,
       userMessage: message,
       characterMinefields: character.minefields || [],
       config: character.annoyance_config,
+      emotionWeight: weight,
     });
 
     // 持久化状态机结果
@@ -188,8 +190,7 @@ export class ChatService {
       return;
     }
 
-    // 5. 正常模式：完整处理管线
-    const { weight, label } = this.emotionEngine.analyze(message);
+    // 5. 正常模式：完整处理管线（weight/label 已在步骤 3 计算）
     // 基础好感增长：缓慢积累，模拟真实关系发展
     const baseGrowth = state.affection < 80 ? 0.05 : 0.02;
     const { newAffection, delta } = this.emotionEngine.updateAffection(state.affection, weight + baseGrowth);
@@ -197,19 +198,7 @@ export class ChatService {
     const finalAffection = Math.min(100, Math.round((newAffection + growthBonus) * 10) / 10);
     const { mood: moodKey, description: moodDescription } = this.emotionEngine.mapMood(finalAffection);
 
-    // 更新心情值（聊天本身影响心情）
-    const currentMood = emotionResult.moodLevel || 0;
-    const { newMood, delta: moodDelta } = this.emotionEngine.updateMood(currentMood, weight);
-    this.db.addMood(userId, characterId, moodDelta);
-    emotionResult.moodLevel = newMood;
-
-    // 更新情绪状态（心情变化可能导致状态转换）
-    const newState = this.emotionStateMachine._getStateForMood(newMood);
-    if (newState !== emotionResult.emotionState) {
-      emotionResult.emotionState = newState;
-      this.db.updateEmotionState(userId, characterId, newState, newMood, emotionResult.coldWarEndAt);
-    }
-
+    // 更新心情值 — 已迁入 EmotionStateMachine.process 统一计算（心情唯一写入点）
     this.db.updateAffection(userId, characterId, finalAffection, moodKey);
     this.db.incrementChatCount(userId, characterId);
     this.db.saveChatMessage({ userId, characterId, role: 'user', content: message, emotionWeight: weight, affectionAfter: finalAffection });
@@ -311,7 +300,6 @@ export class ChatService {
         factCount: userFacts.length,
         emotionState: emotionResult.emotionState,
         moodLevel: emotionResult.moodLevel,
-        moodDelta,
         triggeredMinefield: emotionResult.triggeredMinefield?.description || null,
         weather: environment?.weather?.mood || null,
       },

@@ -43,7 +43,7 @@ export class EmotionStateMachine {
    * @param {{ state: object, userMessage: string, characterMinefields: Array, config: object }} params
    * @returns {{ emotionState: string, moodLevel: number, triggeredMinefield: object|null, isColdWar: boolean, coldWarEndAt: string|null }}
    */
-  process({ state, userMessage, characterMinefields = [], config = {} }) {
+  process({ state, userMessage, characterMinefields = [], config = {}, emotionWeight = 0 }) {
     const cfg = { ...this.defaultConfig, ...config };
     let mood = state.mood_level || 0;
     let coldWarUntil = state.cold_war_until;
@@ -59,6 +59,7 @@ export class EmotionStateMachine {
           triggeredMinefield: null,
           isColdWar: true,
           coldWarEndAt: coldWarUntil,
+          isApology: false,
         };
       }
       // 冷战结束，恢复心情
@@ -79,9 +80,14 @@ export class EmotionStateMachine {
       }
     }
 
+    // 2.5 会话本身对心情的影响（原 EmotionEngine.updateMood 逻辑迁入，心情唯一写入点）
+    const baseBoost = 0.3; // 普通聊天就是开心的
+    const jitter = (Math.random() - 0.5) * 0.3;
+    mood += baseBoost + emotionWeight * 1.5 + jitter;
+    mood = Math.max(-100, Math.min(100, mood));
+
     // 3. 检查道歉（大幅恢复心情）
-    const apologyPatterns = ['对不起', '抱歉', '我错了', '是我的错', '不好意思', '原谅我', '抱歉了', '对不住'];
-    const isApology = apologyPatterns.some(p => userMessage.includes(p));
+    const isApology = this.isApologyMessage(userMessage);
     if (isApology) {
       mood = Math.min(0, mood + cfg.apologyRecovery);
     }
@@ -129,7 +135,14 @@ export class EmotionStateMachine {
       triggeredMinefield,
       isColdWar: emotionState === 'cold_war',
       coldWarEndAt: coldWarUntil,
+      isApology,
     };
+  }
+
+  /** 道歉词命中判定（提前和解与心情恢复共用） */
+  isApologyMessage(text) {
+    const patterns = ['对不起', '抱歉', '我错了', '是我的错', '不好意思', '原谅我', '对不住'];
+    return patterns.some(p => text.includes(p));
   }
 
   getColdWarResponse(coldWarResponses = []) {

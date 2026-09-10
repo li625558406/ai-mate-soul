@@ -126,21 +126,6 @@ export class EmotionEngine {
     return { affectionDecay, moodDecay, xpDecay, hoursOffline };
   }
 
-  /**
-   * 基于聊天情感权重更新心情值
-   * @param {number} currentMood - 当前心情值 (-100 ~ +100)
-   * @param {number} emotionWeight - 情感权重 [-2, 2]
-   * @returns {{ newMood: number, delta: number }}
-   */
-  updateMood(currentMood, emotionWeight) {
-    const baseBoost = 0.3; // 普通聊天就是开心的
-    const jitter = (Math.random() - 0.5) * 0.3;
-    const delta = baseBoost + emotionWeight * 1.5 + jitter;
-    let newMood = currentMood + delta;
-    newMood = Math.max(-100, Math.min(100, Math.round(newMood * 10) / 10));
-    return { newMood, delta: Math.round(delta * 10) / 10 };
-  }
-
   _buildKeywordMap() {
     return {
       extreme_positive: {
