@@ -1,5 +1,23 @@
 # CHANGE.md — 项目迭代记录
 
+## 2026-09-10 — 拟人化整改：链路断点修复 + 6 项拟真增强
+
+### 改动主题
+修复审查发现的 5 处功能链路断点，并落地 6 项拟人化增强：情绪加权心情、道歉提前和解、冷战到期主动和解、主动消息入库与多样化、回复拟真延迟、服务端分条推送、中文长期记忆修复、TTS 语速情绪调制、记忆自然回忆规则。设计文档：`docs/superpowers/specs/2026-09-10-humanization-design.md`；实施计划：`docs/superpowers/plans/2026-09-10-humanization-implementation.md`。
+
+### 核心变更点
+1. **P1 链路修复**：`chatStream` 心情更新统一收敛到 EmotionStateMachine 单一入口（删除 EmotionEngine.updateMood 死代码，心情波动加入情感权重 `weight` 加成）；LLM 回复中的 `[发照片:xx]`/`[去忙:xx:x]` 标签在推送前清洗；`chatStream` 支持 `maxTokens`（心情 < -20 限 200、< -50 限 120，心情差话变少）
+2. **P2 冷战和解三件套**：DB 新增 `cold_war_reason`/`cold_war_phrases` 列；真诚道歉（长度 ≥8 或情感权重 ≥0.3 且非敷衍词）触发提前和解（心情 +30 但不超过 0，进入 uneasy）；敷衍冷战回复改为 LLM 生成 5 条角色专属嘴硬短语按序消耗，用完回退档案 `cold_war_responses`；`ProactiveService` 新增每分钟冷战到期检查，主动生成和解消息入库并推送
+3. **P3 主动消息**：回归消息与定时主动消息全部入库（`saveChatMessage` role=assistant），保证后续对话上下文连贯；消息源按优先级多样化（约定提醒 > 情绪事件 > 日记分享（禁止说"我写了日记"）> 当前活动）
+4. **P4 分条拟真推送**：服务端把 LLM 回复按换行拆条，首条前按情绪加拟真延迟（joyful 0.8-2s ~ angry 3.5-6s，刚睡醒 4-8s），条间发 `message_end` + `typing` + 0.6-1.5s 停顿；前端按 `message_end` 分条渲染气泡、`typing` 控制输入指示器；历史记录 assistant 消息按换行拆分渲染
+5. **P5 中文记忆修复（关键存量 bug）**：Orama english tokenizer 丢弃全部中文 token → 自定义 CJK 2-gram tokenizer（新增 `grams` 字段建索引，建/查共用同一分词器）；修复 `load()` 单参调用导致**重启后长期记忆全量丢失**的严重 bug（Orama 3.x 需两参 load）；旧格式索引文件自动用旧文档重建、损坏文件降级空库
+6. **P5 其他增强**：TTS 情绪语速调制（angry 1.15 / joyful+happy 1.05 / uneasy 0.95，资源不支持时自动去语速重试一次）；长期记忆注入 prompt 增加"自然回忆"使用规则（话题相关顺带提、禁复述原文、禁批量罗列、禁"我记得"式生硬展示）
+
+### 遗留事项
+- 设计偏差说明：设计文档提到"伤心 0.9"语速，但状态机无 sad 状态，映射为 uneasy→0.95
+- 拟真延迟与分条推送已冒烟验证（SSE 事件序列正确）；情绪分条 + 冷战全流程建议在真实浏览器端人工体验验证
+- TTS 语速调制经单测映射验证 + 降级兜底，未用真实 anger 状态打火山接口（避免烧配额）
+
 ## 2026-09-10 — 语音体系切换火山豆包（TTS + 实时通话 + 每角色音色）
 
 ### 改动主题
