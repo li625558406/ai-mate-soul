@@ -1,14 +1,10 @@
 // Electron 主进程入口：单实例锁 → 麦克风权限 → 端口预检 → 起后端 → 等健康 → 开窗
 import { app, session, dialog } from 'electron';
-import path from 'node:path';
 import net from 'node:net';
-import { fileURLToPath } from 'node:url';
+import { PORT, ROOT_DIR as ROOT } from './config.js';
 import { start as startService, stop as stopService, onState, waitHealth } from './serviceManager.js';
 import { createMainWindow, showMainWindow } from './windows.js';
 import { createTray } from './tray.js';
-
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const PORT = 3000;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {

@@ -1,8 +1,9 @@
 // 窗口管理：主窗口（关窗驻留托盘）+ 透明置顶形象小窗
 import { BrowserWindow } from 'electron';
 import path from 'node:path';
+import { PORT } from './config.js';
 
-const HOME = 'http://127.0.0.1:3000';
+const HOME = `http://127.0.0.1:${PORT}`;
 
 let mainWindow = null;
 let overlayWindow = null;

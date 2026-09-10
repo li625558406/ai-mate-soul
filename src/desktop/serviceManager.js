@@ -1,8 +1,9 @@
 // 桌面端后端守护：spawn 系统 Node 跑 src/index.js，健康检查 + 指数退避自动重启
 import { spawn } from 'node:child_process';
 import http from 'node:http';
+import { PORT } from './config.js';
 
-const HEALTH_URL = 'http://127.0.0.1:3000/';
+const HEALTH_URL = `http://127.0.0.1:${PORT}/`;
 const MAX_CONSECUTIVE_FAILS = 5;   // 连续崩溃次数上限，超过后停止重启
 const STABLE_RUN_MS = 60_000;      // 运行超过此时长视为稳定，重置崩溃计数
 
