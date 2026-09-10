@@ -54,7 +54,9 @@ export class ProactiveService {
         this._connections.set(socket.id, { socket, userId, characterId });
         this.db.ensureUser(userId);
 
-        // 检查是否需要推送回归消息
+        // 先补投离线期间的未读主动消息（像微信离线消息一样按间隔陆续到达）
+        await this._deliverUnreadProactive(socket, userId, characterId);
+        // 再检查是否需要推送回归消息
         await this._checkAndPushProactive(socket, userId, characterId);
       });
 
@@ -62,6 +64,36 @@ export class ProactiveService {
         this._connections.delete(socket.id);
       });
     });
+  }
+
+  /**
+   * 补投离线期间生成的未读主动消息（每条间隔 2-4 秒，模拟陆续到达）
+   */
+  async _deliverUnreadProactive(socket, userId, characterId) {
+    try {
+      const character = this.characterManager.getCharacter(characterId);
+      if (!character) return;
+
+      const unread = this.db.getUnreadProactiveMessages(userId, characterId);
+      for (const msg of unread) {
+        if (!socket.connected) return;
+        await new Promise(r => setTimeout(r, 2000 + Math.floor(Math.random() * 2000)));
+        if (!socket.connected) return;
+        socket.emit('proactive', {
+          characterId,
+          characterName: character.nickname || character.name,
+          message: msg.content,
+          sentAt: msg.created_at,
+          offline: true,
+        });
+      }
+      if (unread.length > 0) {
+        this.db.markProactiveRead(unread.map(m => m.id));
+        console.log(`[ProactiveService] 补投 ${unread.length} 条离线主动消息 (${userId}/${characterId})`);
+      }
+    } catch (err) {
+      console.warn('[ProactiveService] 补投未读消息失败:', err.message);
+    }
   }
 
   // ==================== 回归消息（用户重连时） ====================
@@ -230,6 +262,15 @@ export class ProactiveService {
   }
 
   /**
+   * 按关系阶段计算主动消息间隔（关系越亲近越黏人，主动越频繁）
+   */
+  _proactiveIntervalMs(affection) {
+    if (affection > 80) return 30 * 60 * 1000;   // 亲密：30 分钟
+    if (affection > 50) return 60 * 60 * 1000;   // 朋友：1 小时
+    return 2 * 60 * 60 * 1000;                   // 普通认识：2 小时
+  }
+
+  /**
    * 遍历所有连接，检查是否需要推送基于活动的主动消息
    */
   async _checkAllConnections() {
@@ -252,6 +293,79 @@ export class ProactiveService {
         console.warn('[ProactiveService] 定时推送失败:', err.message);
       }
     }
+
+    // 离线用户：生成主动消息入库为未读，等对方上线补投
+    await this._checkOfflinePairs();
+  }
+
+  /**
+   * 离线主动消息：扫描数据库活跃对（排除在线的），生成消息入库为未读
+   * 每轮最多处理 5 个对，控制 LLM 用量；频控走持久化的 last_proactive_at
+   */
+  async _checkOfflinePairs() {
+    const onlineKeys = new Set(
+      [...this._connections.values()].map(c => `${c.userId}_${c.characterId}`)
+    );
+
+    let candidates;
+    try {
+      candidates = this.db.getActivePairsWithState();
+    } catch (err) {
+      console.warn('[ProactiveService] 离线扫描失败:', err.message);
+      return;
+    }
+
+    // 随机抽样最多 5 个候选，避免 LLM 突发调用
+    const eligible = [];
+    for (const row of candidates) {
+      const key = `${row.user_id}_${row.character_id}`;
+      if (onlineKeys.has(key)) continue;                     // 在线的走实时推送路径
+      if ((row.affection || 0) < 30) continue;               // 好感度门槛
+      if (row.cold_war_until && new Date(row.cold_war_until) > new Date()) continue; // 冷战中
+      if (row.busy_until && new Date(row.busy_until) > new Date()) continue;         // 忙碌中
+      const lastAt = row.last_proactive_at ? new Date(row.last_proactive_at).getTime() : 0;
+      if (Date.now() - lastAt < this._proactiveIntervalMs(row.affection)) continue;  // 频控
+      eligible.push(row);
+    }
+    const sample = eligible.sort(() => Math.random() - 0.5).slice(0, 5);
+
+    for (const row of sample) {
+      try {
+        const character = this.characterManager.getCharacter(row.character_id);
+        if (!character) continue;
+
+        // 当前活动：优先 DB 缓存，未命中则 LLM 生成
+        let activity = row.current_activity;
+        if (!activity) {
+          activity = await this.timeService.getCurrentActivity(character);
+          if (activity) this.db.updateCurrentActivity(row.user_id, row.character_id, activity);
+        }
+        if (!activity) continue;
+
+        const today = new Date().toISOString().slice(0, 10);
+        const pendingPlans = this.db.getPendingPlans(row.user_id, row.character_id, today);
+        const latestDiary = this.db.getLatestDiaryBefore(row.user_id, row.character_id, today);
+        const emotionEvent = this.timeService.dailyPlanner?.getActiveEmotionEvent(row.user_id, row.character_id) || null;
+
+        const message = await this._generateDiverseProactiveMessage({
+          character,
+          state: row,
+          activity,
+          timeDescription: this.timeService.getCurrentTimeDescription(),
+          pendingPlans,
+          latestDiary,
+          emotionEvent,
+        });
+
+        if (message) {
+          this.db.saveProactiveMessage({ userId: row.user_id, characterId: row.character_id, content: message });
+          this.db.setLastProactiveAt(row.user_id, row.character_id);
+          console.log(`[ProactiveService] 离线主动消息已入库 (${character.nickname || character.name}): ${message.slice(0, 40)}...`);
+        }
+      } catch (err) {
+        console.warn('[ProactiveService] 单个离线主动消息失败:', err.message);
+      }
+    }
   }
 
   /**
@@ -265,13 +379,13 @@ export class ProactiveService {
     const lastActivity = this._lastUserActivity.get(key) || 0;
     if (now - lastActivity < 10 * 60 * 1000) return;
 
-    // 频率限制：同一用户-角色对2小时内只推一次
-    const lastSent = this._lastProactiveSent.get(key) || 0;
-    if (now - lastSent < 2 * 60 * 60 * 1000) return;
-
     // 获取角色状态
     const state = this.db.getCharacterState(userId, characterId);
     if (!state) return;
+
+    // 频率限制：按关系阶段（持久化 last_proactive_at，重启不丢）
+    const lastSent = state.last_proactive_at ? new Date(state.last_proactive_at).getTime() : 0;
+    if (now - lastSent < this._proactiveIntervalMs(state.affection)) return;
 
     // 冷战中不推送
     if (state.cold_war_until && new Date(state.cold_war_until) > new Date()) return;
@@ -312,8 +426,9 @@ export class ProactiveService {
         message,
       });
       this._lastProactiveSent.set(key, now);
-      // A1: 入库，保证后续对话上下文连贯
+      // A1: 入库，保证后续对话上下文连贯；记录频控时间戳
       this.db.saveChatMessage({ userId, characterId, role: 'assistant', content: message });
+      this.db.setLastProactiveAt(userId, characterId);
       console.log(`[ProactiveService] 已推送主动消息 (${character.nickname || character.name}): ${message.slice(0, 40)}...`);
 
       // 好感度 > 80 时 5% 概率主动发图
@@ -326,6 +441,7 @@ export class ProactiveService {
   /**
    * 基于多样化消息源生成主动消息（B3）
    * 优先级：约定提醒 > 情绪事件 > 日记分享 > 当前活动
+   * 注入当前情绪状态与心结，让主动消息也带情绪（心情差时主动开口会不一样）
    */
   async _generateDiverseProactiveMessage({ character, state, activity, timeDescription, pendingPlans, latestDiary, emotionEvent }) {
     const name = character.nickname || character.name;
@@ -341,12 +457,32 @@ export class ProactiveService {
       sourceLine = `你现在正在${activity}。`;
     }
 
+    // 情绪状态注入
+    const moodLevel = state.mood_level || 0;
+    let moodLine = `你现在的心情平静（${moodLevel}）。`;
+    if (moodLevel >= 50) {
+      moodLine = `你现在心情很好（${moodLevel}），会很想主动找 ta 说话。`;
+    } else if (moodLevel >= 20) {
+      moodLine = `你现在心情不错（${moodLevel}）。`;
+    } else if (moodLevel >= -20) {
+      moodLine = `你现在心情平静（${moodLevel}）。`;
+    } else if (moodLevel >= -50) {
+      moodLine = `你现在心情不太好（${moodLevel}），主动说话会带点低落或敷衍。`;
+    } else {
+      moodLine = `你现在很生气（${moodLevel}），主动开口会带刺或不耐烦。`;
+    }
+    // 敏感期（近期矛盾/冷战刚结束）：主动消息里会不自觉地试探
+    if (state.sensitive_until && new Date(state.sensitive_until) > new Date()) {
+      moodLine += ` 你们最近有过矛盾，虽然你最决定不再计较，但心里还有点疙瘩，说话会不自觉地试探对方的态度。`;
+    }
+
     const systemPrompt = `你是「${name}」，${character.base_personality}。
 现在是${timeDescription}。${sourceLine}
 你们的好感度是 ${Math.round(state.affection)}/100。
+${moodLine}
 
 请生成一条简短的消息（1-2句话），像是你突然想到了对方，想跟 ta 说点什么。
-语气要符合你的性格，要自然，不要太刻意。直接输出消息内容，不要加引号。`;
+语气要符合你的性格和当前心情，要自然，不要太刻意。直接输出消息内容，不要加引号。`;
 
     try {
       return await this.llmProvider.chat(this.provider, {

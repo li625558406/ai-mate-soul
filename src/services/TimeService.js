@@ -56,9 +56,18 @@ export class TimeService {
     try {
       const activity = await this._generateActivityViaLLM(character, h, now);
       this._cache.set(cacheKey, { hour: h, date, activity });
+      this._pruneCache(date);
       return activity;
     } catch {
       return null;
+    }
+  }
+
+  /** 缓存超限时清理非当天的旧条目，防止跨天累积 */
+  _pruneCache(today) {
+    if (this._cache.size <= 200) return;
+    for (const [key, val] of this._cache) {
+      if (val.date !== today) this._cache.delete(key);
     }
   }
 
@@ -184,6 +193,8 @@ ${character.background ? '背景：' + character.background : ''}`;
       cursor.t = new Date(cursor.t.getTime() + 60 * 60 * 1000);
       if (cursor.t >= endTime) break;
     }
+
+    this._pruneCache(new Date().toISOString().slice(0, 10));
 
     if (segments.length === 0) return { narrative: '', text: '' };
 

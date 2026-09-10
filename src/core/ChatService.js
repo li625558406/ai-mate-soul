@@ -73,16 +73,19 @@ export class ChatService {
     this.lifecycleService.ensureBirthdayAnniversary(this.db, userId, characterId, character);
     const currentAge = this.lifecycleService.getCurrentAge(character, state.first_met_at);
 
-    // 2.5 忙碌状态检查（睡觉/开会/上课等）
+    // 2.5 忙碌状态检查（睡觉/开会/上课等；忙碌短语支持角色档案 busy_responses 个性化覆盖）
     let justWokenUp = null; // { activity } 被吵醒时记录活动
     const BUSY_WAKE_THRESHOLD = 5;
-    const BUSY_RESPONSES = {
+    const DEFAULT_BUSY_RESPONSES = {
       '睡觉': ['zzZ...', '别吵...我在睡觉...', '嗯...再让我睡一会儿...', '...（翻身）', '明天再说...'],
       '开会': ['在开会呢...', '等一下，现在不方便...', '会上呢，稍后回你', '...'],
       '上课': ['上课中，下课再聊...', '老师在讲课...', '现在不方便看手机...', '...'],
       '洗澡': ['在洗澡呢，等一下...', '...（水声）', '马上出来...', '...'],
     };
-    const defaultBusyResponses = ['现在有点忙...', '等一下...', '稍后回你...', '...'];
+    const busyResponses = (character.busy_responses && typeof character.busy_responses === 'object')
+      ? character.busy_responses : {};
+    const busyPools = { ...DEFAULT_BUSY_RESPONSES, ...busyResponses };
+    const defaultBusyResponses = busyResponses.default || ['现在有点忙...', '等一下...', '稍后回你...', '...'];
 
     if (state.busy_until) {
       const busyEnd = new Date(state.busy_until);
@@ -96,7 +99,7 @@ export class ChatService {
         if (state.busy_message_count < BUSY_WAKE_THRESHOLD) {
           // 未达到唤醒阈值，返回预设短语
           const activity = state.busy_activity || '';
-          const pool = BUSY_RESPONSES[activity] || defaultBusyResponses;
+          const pool = busyPools[activity] || defaultBusyResponses;
           const response = pool[Math.floor(Math.random() * pool.length)];
           const remainingMin = Math.ceil((busyEnd - now) / 60000);
           const activityIcons = { '睡觉': '💤', '开会': '💼', '上课': '📚', '洗澡': '🚿' };
@@ -157,6 +160,11 @@ export class ChatService {
       emotionResult.moodLevel,
       emotionResult.coldWarEndAt,
     );
+    // 持久化情绪惯性（负面连击 + 敏感期）
+    this.db.updateEmotionInertia(userId, characterId, {
+      negStreak: emotionResult.negStreak,
+      sensitiveUntil: emotionResult.sensitiveUntil,
+    });
 
     // 4. 冷战模式：真诚道歉可提前和解；否则返回预设短语，不调用 LLM
     if (emotionResult.isColdWar) {
@@ -175,7 +183,14 @@ export class ChatService {
         emotionResult.moodLevel = reconciledMood;
         emotionResult.justReconciled = true;
         emotionResult.reconcileReason = cwReason;
-        console.log(`[ChatService] 真诚道歉，提前和解，心情恢复至 ${reconciledMood}`);
+        // 和解后进入 24h 敏感期（心结未完全过去），随情绪惯性持久化
+        emotionResult.sensitiveUntil = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+        emotionResult.negStreak = 0;
+        this.db.updateEmotionInertia(userId, characterId, {
+          negStreak: 0,
+          sensitiveUntil: emotionResult.sensitiveUntil,
+        });
+        console.log(`[ChatService] 真诚道歉，提前和解，心情恢复至 ${reconciledMood}，进入 24h 敏感期`);
         // 落入正常管线，由 LLM 生成带"刚和好"语气的回复
       } else {
         // B6: 记录/刷新触雷原因 + 异步生成本次冷战专属短语（不阻塞回复）
@@ -261,6 +276,27 @@ export class ChatService {
       longTermMemory = await this.memoryService.searchMemory({ userId, characterId, query: message, limit: 3 });
     } catch { /* ok */ }
 
+    // 超短消息（嗯/哦等）分词后检索不到记忆 → 用最近几条用户消息扩展查询词重试一次
+    if (longTermMemory.length === 0) {
+      try {
+        const recentUserMsgs = this.db.getUserMessageHistory(userId, characterId, 3);
+        const expandedQuery = [...recentUserMsgs.slice().reverse(), message].join(' ').trim();
+        if (expandedQuery.length > message.length) {
+          longTermMemory = await this.memoryService.searchMemory({ userId, characterId, query: expandedQuery, limit: 2 });
+        }
+      } catch { /* ok */ }
+    }
+
+    // 上一条内心独白（3 天内有效，用于心声余波反哺）
+    let lastMonologue = null;
+    try {
+      const monologues = this.db.getRecentMonologues(userId, characterId, 1);
+      if (monologues[0]?.created_at) {
+        const ageDays = (Date.now() - new Date(String(monologues[0].created_at).replace(' ', 'T')).getTime()) / 86400000;
+        if (ageDays <= 3) lastMonologue = monologues[0];
+      }
+    } catch { /* ok */ }
+
     const userFacts = this.db.getUserFacts(userId, characterId);
 
     // 7. 环境感知
@@ -315,16 +351,18 @@ export class ChatService {
       currentAge,
       wokenUpContext: justWokenUp ? `你刚才正在${justWokenUp.activity}，被对方连续发消息吵醒了。你现在很不开心，语气应该明显变冷、变短。表现出被吵醒的烦躁。` : null,
       justReconciled: emotionResult.justReconciled ? (emotionResult.reconcileReason || '一些矛盾') : null,
+      lastMonologue,
     });
 
-    // 10. 发送 meta
+    // 10. 发送 meta（心情指标统一以状态机 moodLevel 为准，避免与好感度映射矛盾）
     yield {
       type: 'meta',
       data: {
         characterName: character.name,
         affection: finalAffection,
-        mood: moodKey,
-        moodDescription,
+        mood: emotionResult.emotionState,
+        moodDescription: this.emotionStateMachine.getMoodDescription(emotionResult.moodLevel),
+        moodLevel: emotionResult.moodLevel,
         emotionLabel: label,
         affectionDelta: delta,
         growthBonus,
@@ -336,7 +374,6 @@ export class ChatService {
         memoryCount: longTermMemory.length,
         factCount: userFacts.length,
         emotionState: emotionResult.emotionState,
-        moodLevel: emotionResult.moodLevel,
         triggeredMinefield: emotionResult.triggeredMinefield?.description || null,
         weather: environment?.weather?.mood || null,
       },
@@ -434,54 +471,27 @@ export class ChatService {
       });
     }
 
-    // 15. 检测是否需要发照片（标记已在流式前剥离）
+    // 15. 发照片/忙碌意图判定（显式标记优先；两者都无标记时走一次合并 LLM 判断，减少每轮延迟）
     let photoType = null;
     if (photoTag && this.imageService) {
       photoType = { '空镜': 'activity', '拼图': 'selfie_grid', '她拍': 'portrait' }[photoTag] || 'selfie';
       console.log(`[ChatService] 检测到发照片标记: "${photoTag}" → photoType=${photoType}`);
     } else if (photoTag && !this.imageService) {
       console.log(`[ChatService] 检测到发照片标记但 imageService 未初始化，跳过`);
-    } else if (this.imageService) {
-      // AI 语义判断：用上下文 + 时间 + 天气判断角色是否要发照片
-      try {
-        const recent5 = this.db.getRecentChatHistory(userId, characterId, 5);
-        const contextLines = recent5.map(m => `${m.role === 'user' ? '对方' : character.name}: ${m.content.slice(0, 100)}`);
-        contextLines.push(`${character.name}: ${replyText.slice(0, 200)}`);
+    }
 
-        const timeStr = new Date().toLocaleString('zh-CN', { hour12: false });
-        const weatherStr = environment?.weather?.mood || environment?.weather?.description || '未知';
-
-        const photoResult = await this.llmProvider.chat(usedProvider, {
-          systemPrompt: `你是「${character.name}」的照片意图判断助手。根据最近5条对话上下文、当前时间和天气，判断角色是否在对话中暗示要发照片给对方。
-
-判断标准：
-1. 角色表示要拍照/发自拍/给对方看自己的样子 → selfie（自拍）
-2. 角色表示要给对方看自己正在做的事/场景/周围环境 → activity（空镜，拍正在做的事或场景）
-3. 角色表示要发一组照片/今天的照片合集 → selfie_grid（拼图）
-4. 注意区分：对方要求发照片 和 角色主动要发照片（两种都要触发）
-5. 注意区分：只是在聊拍照的话题（比如讨论摄影技巧），还是真的要在对话中发照片
-6. 考虑时间和天气：比如深夜可能发"睡前自拍"，晴天可能发"在户外空镜"
-
-photo_type 取值：
-- selfie：自拍（拍自己的脸或全身）
-- activity：空镜（拍正在做的事、眼前的场景、食物、风景等）
-- selfie_grid：拼图（发一组照片）
-
-如果不需要发照片，返回 {"send_photo": false}。`,
-          messages: [{ role: 'user', content: `当前时间：${timeStr}\n当前天气：${weatherStr}\n\n最近对话：\n${contextLines.join('\n')}` }],
-          temperature: 0.1,
-        });
-
-        const jsonMatch = photoResult.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          const parsed = JSON.parse(jsonMatch[0]);
-          if (parsed.send_photo && parsed.photo_type) {
-            photoType = parsed.photo_type;
-            console.log(`[ChatService] AI照片判断: photoType=${photoType}, 原因: ${parsed.reason || '无'}`);
-          }
+    let busyInfo = busyTag; // { activity } 或 null
+    if (!photoTag && !busyTag) {
+      const judgment = await this._judgePhotoAndBusy(usedProvider, userId, characterId, character, replyText, environment);
+      if (judgment.photoType) {
+        if (this.imageService) {
+          photoType = judgment.photoType;
+          console.log(`[ChatService] AI照片判断: photoType=${photoType}, 原因: ${judgment.reason || '无'}`);
         }
-      } catch (err) {
-        console.warn(`[ChatService] AI照片判断失败，跳过: ${err.message}`);
+      }
+      if (judgment.activity) {
+        busyInfo = { activity: judgment.activity };
+        console.log(`[ChatService] AI忙碌判断: ${judgment.activity}, 原因: ${judgment.reason || '无'}`);
       }
     }
 
@@ -511,56 +521,72 @@ photo_type 取值：
       }
     }
 
-    // 18. 忙碌标记（已在流式前剥离）或 AI 语义判断
-    if (busyTag) {
-      const busyMinutes = this._calcBusyDuration(busyTag.activity);
-      this.db.setBusyState(userId, characterId, busyTag.activity, busyMinutes);
-      console.log(`[ChatService] 角色进入忙碌状态(标记): ${busyTag.activity}, ${busyMinutes}分钟`);
-    } else {
-      // 把最近5条上下文交给 AI 判断是否需要进入忙碌状态
-      try {
-        const recent5 = this.db.getRecentChatHistory(userId, characterId, 5);
-        const contextLines = recent5.map(m => `${m.role === 'user' ? '对方' : character.name}: ${m.content.slice(0, 100)}`);
-        contextLines.push(`${character.name}: ${replyText.slice(0, 200)}`);
-
-        const busyResult = await this.llmProvider.chat(usedProvider, {
-          systemPrompt: `你是「${character.name}」的状态判断助手。根据最近对话上下文，判断角色是否需要「立即离开并进入无法回复消息的状态」。
-
-严格判断标准（必须同时满足才返回 busy=true）：
-1. 角色明确表示「现在就要去做某事，不能再聊天了」（如"我先睡了，晚安"、"我去洗澡了"、"我得去上课了"）
-2. 该活动会导致角色在接下来一段时间内完全无法回复消息
-
-以下情况绝对不要触发（返回 busy=false）：
-- 角色只是说"有点困"、"好累"但没有说要去睡觉
-- 角色提议"改天再聊"、"明天再约"但还在继续对话
-- 角色提到某事但不代表现在立刻去做（如"我有课"不等于"我现在要去上课"）
-- 角色还在和对方互动、反问、等待对方回复
-- 角色表达了情绪但不涉及离开（如"好无聊"、"不想动"）
-- 用户说要去忙，不是角色自己要去忙
-
-请用严格的 JSON 格式回复，不要有任何其他文字：
-- 如果角色现在真的要离开：{"busy": true, "activity": "活动名", "reason": "简短原因"}
-  activity 只能是：睡觉、开会、上课、洗澡、吃饭、出门、运动、其他
-- 其他所有情况：{"busy": false}`,
-          messages: [{ role: 'user', content: `当前时间：${new Date().toLocaleString('zh-CN', { hour12: false })}\n\n最近对话：\n${contextLines.join('\n')}` }],
-          temperature: 0.0,
-        });
-
-        const jsonMatch = busyResult.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          const parsed = JSON.parse(jsonMatch[0]);
-          if (parsed.busy && parsed.activity) {
-            const busyMinutes = this._calcBusyDuration(parsed.activity);
-            this.db.setBusyState(userId, characterId, parsed.activity, busyMinutes);
-            console.log(`[ChatService] 角色进入忙碌状态(AI判断): ${parsed.activity}, ${busyMinutes}分钟, 原因: ${parsed.reason || '无'}`);
-          }
-        }
-      } catch (err) {
-        console.warn(`[ChatService] AI忙碌判断失败，跳过: ${err.message}`);
-      }
+    // 18. 忙碌状态落地（显式标记或合并 AI 判断的结果）
+    if (busyInfo) {
+      const busyMinutes = this._calcBusyDuration(busyInfo.activity);
+      this.db.setBusyState(userId, characterId, busyInfo.activity, busyMinutes);
+      console.log(`[ChatService] 角色进入忙碌状态: ${busyInfo.activity}, ${busyMinutes}分钟`);
     }
 
     yield { type: 'done', data: null };
+  }
+
+  /**
+   * 合并判断：角色是否要发照片 + 是否要进入忙碌状态（一次 LLM 调用替代原先两次串行调用）
+   * @returns {{ photoType: string|null, activity: string|null, reason: string }}
+   */
+  async _judgePhotoAndBusy(provider, userId, characterId, character, replyText, environment) {
+    const result = { photoType: null, activity: null, reason: '' };
+    try {
+      const timeStr = new Date().toLocaleString('zh-CN', { hour12: false });
+      const weatherStr = environment?.weather?.mood || environment?.weather?.description || '未知';
+
+      const response = await this.llmProvider.chat(provider, {
+        systemPrompt: `你是「${character.name}」的行为判断助手。根据最近对话上下文，完成两个独立判断（都是否需要）。
+
+【判断一：发照片】角色是否在对话中暗示要发照片给对方。
+- 角色表示要拍照/发自拍/给对方看自己的样子 → photo_type = "selfie"（自拍）
+- 角色表示要给对方看自己正在做的事/场景/周围环境 → photo_type = "activity"（空镜）
+- 角色表示要发一组照片/今天的照片合集 → photo_type = "selfie_grid"（拼图）
+- 注意区分：对方要求发照片 和 角色主动要发照片（两种都要触发）
+- 注意区分：只是聊拍照话题（如讨论摄影技巧）≠ 真的要发照片
+- 考虑时间天气：深夜可能发"睡前自拍"，晴天可能发"在户外空镜"
+
+【判断二：进入忙碌】角色是否「现在就要去做某事，之后一段时间完全无法回复消息」。
+必须同时满足才算 busy：
+1. 角色明确表示现在就要去做某事（如"我先睡了"、"我去洗澡了"、"我得去上课了"）
+2. 该活动会导致接下来一段时间完全无法回复消息
+绝对不要 busy 的情况：只是有点困/累但还在聊、提议改天再聊、提到某事但不是现在做、还在等对方回复、是对方要忙而不是自己忙。
+
+用严格 JSON 回复，不要任何其他文字：
+{"send_photo": true/false, "photo_type": "selfie|activity|selfie_grid", "busy": true/false, "activity": "睡觉|开会|上课|洗澡|吃饭|出门|运动|其他", "reason": "简短原因"}`,
+        messages: [{ role: 'user', content: this._buildJudgmentContext(character, replyText, timeStr, weatherStr) }],
+        temperature: 0.0,
+      });
+
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        if (parsed.send_photo && ['selfie', 'activity', 'selfie_grid'].includes(parsed.photo_type)) {
+          result.photoType = parsed.photo_type;
+        }
+        if (parsed.busy && parsed.activity) {
+          result.activity = parsed.activity;
+        }
+        result.reason = parsed.reason || '';
+      }
+    } catch (err) {
+      console.warn(`[ChatService] 合并意图判断失败，跳过: ${err.message}`);
+    }
+    return result;
+  }
+
+  /** 拼接意图判断用的上下文（最近 5 条对话 + 当前时间天气） */
+  _buildJudgmentContext(userId, characterId, character, replyText, timeStr, weatherStr) {
+    const recent5 = this.db.getRecentChatHistory(userId, characterId, 5);
+    const contextLines = recent5.map(m => `${m.role === 'user' ? '对方' : character.name}: ${m.content.slice(0, 100)}`);
+    contextLines.push(`${character.name}: ${replyText.slice(0, 200)}`);
+    return `当前时间：${timeStr}\n当前天气：${weatherStr}\n\n最近对话：\n${contextLines.join('\n')}`;
   }
 
   /**
@@ -650,6 +676,10 @@ photo_type 取值：
   /** 按情绪 + 长度计算首条回复延迟（"正在输入..."期间），范围上限 8s */
   _calcReplyDelay(emotionState, justWokenUp, length) {
     if (justWokenUp) return 4000 + Math.floor(Math.random() * 4000);
+    // 生气"已读不回"：30% 概率晾对方 10-16 秒才回，模拟憋着气不想理
+    if (emotionState === 'angry' && Math.random() < 0.3) {
+      return 10000 + Math.floor(Math.random() * 6000);
+    }
     const RANGES = {
       joyful: [800, 2000],
       happy: [1000, 2000],

@@ -32,17 +32,52 @@ export class EmotionEngine {
     for (const [label, { weight, patterns }] of Object.entries(this._keywords)) {
       for (const pattern of patterns) {
         if (lower.includes(pattern)) {
-          if (Math.abs(weight) > Math.abs(maxWeight)) {
-            maxWeight = weight;
-            matchedLabel = label;
+          // 否定反转检测：positive 词前方近距有否定词 → 反转为负面；negative 词前有否定 → 降为中性偏正
+          const negated = this._isNegated(lower, pattern);
+          let effective = weight;
+          if (negated) {
+            effective = weight > 0 ? -0.8 : 0.3;
+          }
+          if (Math.abs(effective) > Math.abs(maxWeight)) {
+            maxWeight = effective;
+            matchedLabel = negated ? `${label}_negated` : label;
           }
         }
       }
     }
 
+    // 敷衍信号：整条消息就是敷衍应答（哦/嗯/呵呵/切 等），弱负面
+    if (maxWeight === 0 && this._isPerfunctory(text)) {
+      return { weight: -0.5, label: 'perfunctory' };
+    }
+
     // 限制在 [-2, 2] 范围
     const clampedWeight = Math.max(-2, Math.min(2, maxWeight));
     return { weight: clampedWeight, label: matchedLabel };
+  }
+
+  /**
+   * 判断 pattern 在文本中是否被否定词修饰（前 2 个字符内出现否定词）
+   */
+  _isNegated(text, pattern) {
+    const NEGATIONS = ['不', '没', '别', '无', '莫', '未', '才不', '毫不', '没那么'];
+    let idx = text.indexOf(pattern);
+    while (idx > 0) {
+      const window = text.slice(Math.max(0, idx - 3), idx);
+      if (NEGATIONS.some(n => window.includes(n))) return true;
+      idx = text.indexOf(pattern, idx + 1);
+    }
+    return false;
+  }
+
+  /**
+   * 敷衍应答检测：整条消息仅由单/重复语气应答字构成（≤4 字），如"哦"、"呵呵"、"切"、"嗯。"
+   */
+  _isPerfunctory(text) {
+    const trimmed = text.trim().replace(/[。.!！?？~\s]/g, '');
+    if (trimmed.length === 0 || trimmed.length > 4) return false;
+    return /^(哦|噢|噢|喔|呃|呵+|嗯+|哦哦|喔哦|切|额|行|好吧|随便)$/.test(trimmed)
+      || /^(.)\1+$/.test(trimmed); // 同一字重复，如"哦哦哦"
   }
 
   /**
@@ -141,6 +176,8 @@ export class EmotionEngine {
           '谢谢', '谢谢你', '感谢', '辛苦了', '好厉害', '真好',
           '不错', '可爱', '喜欢你', '开心', '哈哈', '有趣',
           '厉害', '佩服', '好看', '漂亮', '好棒',
+          '抱抱', '亲亲', '想你了', '好想你', '么么', '心疼你',
+          '有你在', '和你聊天', '真乖', '真贴心', '晚安', '早安',
         ],
       },
       negative: {
@@ -148,6 +185,8 @@ export class EmotionEngine {
         patterns: [
           '无聊', '算了', '随便', '不想理你', '烦', '差劲',
           '不喜欢', '走了', '闭嘴', '别说了', '无语',
+          '呵呵', '烦死了', '无聊死了', '懒得理你', '不想说话',
+          '又来了', '烦不烦', '跟你没关系', '少管我', '假惺惺',
         ],
       },
       extreme_negative: {

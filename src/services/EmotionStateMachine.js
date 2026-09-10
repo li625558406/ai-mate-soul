@@ -36,6 +36,22 @@ export class EmotionStateMachine {
       coldWarDurationMin: 30,  // 冷战最短持续分钟
       minefieldMultiplier: 1,  // 雷区触发倍率
     };
+
+    /** @type {Map<string, RegExp>} 雷区正则预编译缓存 */
+    this._regexCache = new Map();
+  }
+
+  /** 获取预编译的雷区正则（无效 pattern 返回 null） */
+  _getMinefieldRegex(trigger) {
+    if (this._regexCache.has(trigger)) return this._regexCache.get(trigger);
+    let regex = null;
+    try {
+      regex = new RegExp(trigger, 'i');
+    } catch {
+      regex = null;
+    }
+    this._regexCache.set(trigger, regex);
+    return regex;
   }
 
   /**
@@ -47,6 +63,9 @@ export class EmotionStateMachine {
     const cfg = { ...this.defaultConfig, ...config };
     let mood = state.mood_level || 0;
     let coldWarUntil = state.cold_war_until;
+    let negStreak = state.neg_streak || 0;
+    let sensitiveUntil = state.sensitive_until || null;
+    let justExitedColdWar = false;
 
     // 1. 检查是否仍在冷战中
     if (coldWarUntil) {
@@ -60,11 +79,14 @@ export class EmotionStateMachine {
           isColdWar: true,
           coldWarEndAt: coldWarUntil,
           isApology: false,
+          negStreak,
+          sensitiveUntil,
         };
       }
-      // 冷战结束，恢复心情
+      // 冷战结束，恢复心情，并进入 24h 敏感期（心结还没完全过去）
       coldWarUntil = null;
       mood = Math.min(0, mood + 30);
+      justExitedColdWar = true;
     }
 
     // 2. 检查时间衰减（向 0 回归）
@@ -83,34 +105,48 @@ export class EmotionStateMachine {
     // 2.5 会话本身对心情的影响（原 EmotionEngine.updateMood 逻辑迁入，心情唯一写入点）
     const baseBoost = 0.3; // 普通聊天就是开心的
     const jitter = (Math.random() - 0.5) * 0.3;
-    mood += baseBoost + emotionWeight * 1.5 + jitter;
-    mood = Math.max(-100, Math.min(100, mood));
+    let sessionMoodDelta = baseBoost + emotionWeight * 1.5;
 
-    // 3. 检查道歉（大幅恢复心情）
-    const isApology = this.isApologyMessage(userMessage);
-    if (isApology) {
-      mood = Math.min(0, mood + cfg.apologyRecovery);
+    // 2.6 情绪惯性：
+    //   a) 连续负面消息 → 越吵越凶，惩罚递增（每多连击一次额外 -2，封顶 -10）
+    //   b) 敏感期（和解后 24h）→ 负面消息影响放大 1.5 倍
+    //   c) 心情极好时对轻微冒犯更宽容（负面影响 ×0.7）
+    if (emotionWeight < -0.5) {
+      negStreak += 1;
+    } else if (emotionWeight > 0.5) {
+      negStreak = 0;
+    }
+    const inSensitivePeriod = sensitiveUntil && new Date(sensitiveUntil) > new Date();
+    if (sessionMoodDelta < 0) {
+      if (negStreak >= 2) sessionMoodDelta -= Math.min(10, 2 * (negStreak - 1));
+      if (inSensitivePeriod) sessionMoodDelta *= 1.5;
+      else if (mood >= 50) sessionMoodDelta *= 0.7;
     }
 
-    // 4. 检查雷区触发（降低心情）
+    mood += sessionMoodDelta + jitter;
+    mood = Math.max(-100, Math.min(100, mood));
+
+    // 3. 检查道歉（大幅恢复心情；敏感期中心次没完全过去，恢复减半）
+    const isApology = this.isApologyMessage(userMessage);
+    if (isApology) {
+      const recovery = inSensitivePeriod ? cfg.apologyRecovery * 0.5 : cfg.apologyRecovery;
+      mood = Math.min(0, mood + recovery);
+      negStreak = 0;
+    }
+
+    // 4. 检查雷区触发（降低心情；敏感期内雷区更痛 ×1.5）
     let triggeredMinefield = null;
     if (!isApology) {
       for (const mf of characterMinefields) {
         const triggers = Array.isArray(mf.trigger) ? mf.trigger : [mf.trigger];
         for (const trigger of triggers) {
-          try {
-            const regex = new RegExp(trigger, 'i');
-            if (regex.test(userMessage)) {
-              mood -= (mf.mood_penalty || 15) * cfg.minefieldMultiplier;
-              triggeredMinefield = mf;
-              break;
-            }
-          } catch {
-            if (userMessage.includes(trigger)) {
-              mood -= (mf.mood_penalty || mf.annoyance || 15) * cfg.minefieldMultiplier;
-              triggeredMinefield = mf;
-              break;
-            }
+          const regex = this._getMinefieldRegex(trigger);
+          if (regex ? regex.test(userMessage) : userMessage.includes(trigger)) {
+            let penalty = (mf.mood_penalty || mf.annoyance || 15) * cfg.minefieldMultiplier;
+            if (inSensitivePeriod) penalty *= 1.5;
+            mood -= penalty;
+            triggeredMinefield = mf;
+            break;
           }
         }
         if (triggeredMinefield) break;
@@ -129,6 +165,11 @@ export class EmotionStateMachine {
       coldWarUntil = endTime.toISOString();
     }
 
+    // 8. 冷战自然结束 → 开启 24h 敏感期
+    if (justExitedColdWar) {
+      sensitiveUntil = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    }
+
     return {
       emotionState,
       moodLevel: mood,
@@ -136,6 +177,9 @@ export class EmotionStateMachine {
       isColdWar: emotionState === 'cold_war',
       coldWarEndAt: coldWarUntil,
       isApology,
+      negStreak,
+      sensitiveUntil,
+      justExitedColdWar,
     };
   }
 
@@ -166,6 +210,15 @@ export class EmotionStateMachine {
 
   getStateLabel(emotionState) {
     return this.STATES[emotionState]?.label || emotionState;
+  }
+
+  /** 由心情值派生统一的对外描述（meta 展示唯一来源） */
+  getMoodDescription(moodLevel) {
+    const ICONS = {
+      joyful: '😊', happy: '🙂', calm: '😐', uneasy: '😕', angry: '😠', cold_war: '🧊',
+    };
+    const state = this._getStateForMood(moodLevel);
+    return `${ICONS[state] || '😐'} ${this.STATES[state].label}`;
   }
 
   _getStateForMood(mood) {

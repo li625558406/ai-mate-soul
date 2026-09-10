@@ -172,6 +172,7 @@ export class MemoryService {
 
   /**
    * 根据用户输入检索相关历史记忆
+   * 相关度 = 词语命中次数 × 时间衰减（半衰期 14 天，近事更容易被想起）
    * @param {{ userId, characterId, query, limit }} params
    * @returns {Array<{summary, userMessage, aiResponse, emotionLabel, timestamp}>}
    */
@@ -180,7 +181,7 @@ export class MemoryService {
 
     // 对用户输入分词后搜索（Orama 中文全文搜索）
     const terms = this._tokenizeTerms(query);
-    const results = [];
+    const hits = new Map(); // id → { document, termHits }
 
     for (const term of terms) {
       if (term.length < 2) continue;
@@ -188,11 +189,14 @@ export class MemoryService {
         const res = await search(db, {
           term,
           properties: ['grams'],
-          limit: 5,
+          limit: 20,
         });
         for (const hit of res.hits) {
-          if (!results.find(r => r.id === hit.id)) {
-            results.push(hit);
+          const existing = hits.get(hit.id);
+          if (existing) {
+            existing.termHits += 1;
+          } else {
+            hits.set(hit.id, { document: hit.document, termHits: 1 });
           }
         }
       } catch {
@@ -200,7 +204,17 @@ export class MemoryService {
       }
     }
 
-    return results.slice(0, limit).map(r => r.document);
+    // 时间衰减重排：命中次数 × exp(-Δdays/14)
+    const now = Date.now();
+    const scored = [...hits.values()].map(({ document, termHits }) => {
+      const ts = document.timestamp ? new Date(document.timestamp).getTime() : now;
+      const days = Math.max(0, (now - ts) / 86400000);
+      const score = termHits * Math.exp(-days / 14);
+      return { document, score };
+    });
+    scored.sort((a, b) => b.score - a.score);
+
+    return scored.slice(0, limit).map(s => s.document);
   }
 
   /** 关闭时持久化所有实例 */

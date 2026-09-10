@@ -686,7 +686,9 @@ const socket = io();
 })();
 
 socket.on('proactive', (data) => {
-  appendMsg('proactive', data.message, data.characterName + ' (主动)');
+  // 离线补投的消息显示原始发送时间（created_at 格式 YYYY-MM-DD HH:MM:SS）
+  const timeLabel = data.offline && data.sentAt ? ' · ' + String(data.sentAt).slice(11, 16) : '';
+  appendMsg('proactive', data.message, data.characterName + ' (主动' + timeLabel + ')');
   refreshState();
 });
 

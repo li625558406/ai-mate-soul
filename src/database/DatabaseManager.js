@@ -239,6 +239,17 @@ export class DatabaseManager {
       this.db.prepare(`UPDATE inner_monologue SET mood_after = -mood_after`).run();
       console.log('[DatabaseManager] 迁移完成: annoyance_after → mood_after (值已反转)');
     } catch { /* already migrated */ }
+
+    // Migration: 情绪惯性字段（连续负面连击 / 和解敏感期）
+    try { this.db.prepare(`ALTER TABLE characters_state ADD COLUMN neg_streak INTEGER DEFAULT 0`).run(); } catch { /* exists */ }
+    try { this.db.prepare(`ALTER TABLE characters_state ADD COLUMN sensitive_until TEXT DEFAULT NULL`).run(); } catch { /* exists */ }
+
+    // Migration: 主动消息频控时间戳（持久化，重启不丢）
+    try { this.db.prepare(`ALTER TABLE characters_state ADD COLUMN last_proactive_at TEXT DEFAULT NULL`).run(); } catch { /* exists */ }
+
+    // Migration: 离线主动消息未读机制
+    try { this.db.prepare(`ALTER TABLE chat_history ADD COLUMN is_proactive INTEGER DEFAULT 0`).run(); } catch { /* exists */ }
+    try { this.db.prepare(`ALTER TABLE chat_history ADD COLUMN read_at TEXT DEFAULT NULL`).run(); } catch { /* exists */ }
   }
 
   // ==================== User Profile ====================
@@ -324,6 +335,13 @@ export class DatabaseManager {
     ).run(emotionState, moodLevel, coldWarEndAt, userId, characterId);
   }
 
+  /** 持久化情绪惯性：连续负面连击数 + 敏感期截止时间 */
+  updateEmotionInertia(userId, characterId, { negStreak, sensitiveUntil }) {
+    this.db.prepare(
+      `UPDATE characters_state SET neg_streak = ?, sensitive_until = ?, updated_at = datetime('now', 'localtime') WHERE user_id = ? AND character_id = ?`
+    ).run(negStreak ?? 0, sensitiveUntil ?? null, userId, characterId);
+  }
+
   // ==================== Busy State ====================
 
   setBusyState(userId, characterId, activity, durationMinutes) {
@@ -370,6 +388,49 @@ export class DatabaseManager {
       `INSERT INTO chat_history (user_id, character_id, role, content, emotion_weight, affection_after)
        VALUES (?, ?, ?, ?, ?, ?)`
     ).run(userId, characterId, role, content, emotionWeight, affectionAfter);
+  }
+
+  /** 离线期间生成的主动消息入库（未读状态） */
+  saveProactiveMessage({ userId, characterId, content }) {
+    this.db.prepare(
+      `INSERT INTO chat_history (user_id, character_id, role, content, is_proactive)
+       VALUES (?, ?, 'assistant', ?, 1)`
+    ).run(userId, characterId, content);
+  }
+
+  /** 未读主动消息（仅取 24h 内，防积压轰炸），最多 5 条 */
+  getUnreadProactiveMessages(userId, characterId) {
+    return this.db.prepare(
+      `SELECT id, content, created_at FROM chat_history
+       WHERE user_id = ? AND character_id = ? AND is_proactive = 1 AND read_at IS NULL
+         AND created_at > datetime('now', 'localtime', '-24 hours')
+       ORDER BY created_at ASC LIMIT 5`
+    ).all(userId, characterId);
+  }
+
+  /** 批量标记主动消息已读 */
+  markProactiveRead(ids) {
+    if (!ids || ids.length === 0) return;
+    const placeholders = ids.map(() => '?').join(',');
+    this.db.prepare(
+      `UPDATE chat_history SET read_at = datetime('now', 'localtime') WHERE id IN (${placeholders})`
+    ).run(...ids);
+  }
+
+  /** 记录最近一次主动消息时间（持久化频控，重启不丢） */
+  setLastProactiveAt(userId, characterId, iso = new Date().toISOString()) {
+    this.db.prepare(
+      `UPDATE characters_state SET last_proactive_at = ?, updated_at = datetime('now', 'localtime') WHERE user_id = ? AND character_id = ?`
+    ).run(iso, userId, characterId);
+  }
+
+  /** 所有有过对话的用户-角色对及其状态（离线主动消息扫描用） */
+  getActivePairsWithState() {
+    return this.db.prepare(
+      `SELECT user_id, character_id, affection, mood_level, emotion_state, cold_war_until,
+              busy_until, last_proactive_at, current_activity
+       FROM characters_state WHERE chat_count > 0`
+    ).all();
   }
 
   // ==================== Photos ====================

@@ -12,7 +12,7 @@ export class DynamicPromptBuilder {
     triggeredMinefield,
     currentTimeDescription, lifeStagePrompt, currentAge, wokenUpContext,
     scheduleSegment, pendingPlans = [], activeEmotionEvent,
-    justReconciled,
+    justReconciled, lastMonologue,
   }) {
     const sections = [];
 
@@ -32,7 +32,11 @@ export class DynamicPromptBuilder {
 
     sections.push(this._buildInnerMonologueInstruction(moodLevel, triggeredMinefield));
     sections.push(this._buildMoodGuidance(moodLevel));
-    sections.push(this._buildConstraint(character, mirrorWords));
+    sections.push(this._buildConstraint(character, mirrorWords, personalityStage));
+
+    if (lastMonologue) {
+      sections.push(this._buildLastMonologue(lastMonologue));
+    }
 
     if (currentActivity) {
       sections.push(this._buildCurrentActivity(currentActivity, scheduleSegment));
@@ -237,10 +241,22 @@ export class DynamicPromptBuilder {
     }
   }
 
-  _buildConstraint(character, mirrorWords) {
+  _buildConstraint(character, mirrorWords, personalityStage) {
     let mirrorHint = '';
     if (mirrorWords.length > 0) {
       mirrorHint = `\n7. 对方说话时经常使用这些词：「${mirrorWords.join('、')}」。在自然的情况下，你可以偶尔模仿对方的用词习惯。`;
+    }
+
+    // 说话风格随关系阶段漂移：越亲近话越松，越疏远话越克制
+    let stageStyle = '';
+    if (personalityStage) {
+      const STYLE_BY_STAGE = {
+        cold: '你现在和对方还不熟：说话克制简短，几乎不用语气词（呀/呢/嘛/哦），不开玩笑，不分享私事。',
+        acquaintance: '你们只是普通认识：语气平和客气，偶尔可以用一两个语气词，但保持距离感。',
+        friend: '你们已经是朋友：可以自然使用语气词，开小玩笑，偶尔吐槽对方，聊日常。',
+        intimate: '你们非常亲密：可以撒娇、用叠词和语气词、说黏人的话、直接表达想念，像和最亲近的人聊天一样。',
+      };
+      stageStyle = `\n12. [关系语气] ${STYLE_BY_STAGE[personalityStage.label] || ''}`;
     }
 
     return `[行为约束]
@@ -265,7 +281,17 @@ export class DynamicPromptBuilder {
     例如：[去忙:睡觉:30] 或 [去忙:洗澡:15]
     注意：标记必须独占一行。加上标记意味着你接下来一段时间不会回复消息。
     绝对不要加标记的情况：只是有点困但还在聊天、提议改天再聊、提到某事但不代表现在去做、还在等对方回复。
-11. [分条消息] 如果回复有多句话，用换行把每句话分成独立的一行，像发微信一样一条一条发，每条尽量不超过30个字。心情好可以发2-4条，心情差只发1条。`;
+11. [分条消息] 如果回复有多句话，用换行把每句话分成独立的一行，像发微信一样一条一条发，每条尽量不超过30个字。心情好可以发2-4条，心情差只发1条。${stageStyle}`;
+  }
+
+  /**
+   * 心声余波：注入上一条内心独白，让角色在话题相关时自然呼应当时的心结
+   */
+  _buildLastMonologue(m) {
+    const dateStr = m.created_at ? String(m.created_at).slice(0, 10) : '';
+    return `[心声余波] ${dateStr ? `${dateStr}，` : ''}聊到「${String(m.user_message).slice(0, 50)}」的时候，你心里其实想的是：「${String(m.thought).slice(0, 100)}」。
+如果这次的话题和那件事自然相关，可以让当时的心绪在这次回复里淡淡流露出来（委屈、在意、没说出口的话）。
+绝对不要复述上面这句话的原文，也不要提"上次我心里想"这类表达，只让它自然影响你的语气。`;
   }
 
   _buildOfflineNarrative(narrative, timeline) {
