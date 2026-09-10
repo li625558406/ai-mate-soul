@@ -712,7 +712,14 @@ const socket = io();
 // 桌面端后端子进程崩溃/重启时给出全屏遮罩，恢复后自动消失
 const connMask = document.getElementById('connMask');
 socket.on('disconnect', () => { connMask.style.display = 'flex'; });
-socket.on('connect', () => { connMask.style.display = 'none'; });
+socket.on('connect', () => {
+  connMask.style.display = 'none';
+  // 后端子进程重启后服务端 socket 注册丢失，重连后必须补发 register，否则主动消息静默丢失
+  const uid = document.getElementById('userId').value.trim();
+  if (uid && currentCharacterId) {
+    socket.emit('register', { userId: uid, characterId: currentCharacterId });
+  }
+});
 
 (async () => {
   await loadCharacters();
