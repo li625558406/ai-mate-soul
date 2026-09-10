@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>avatar-overlay</title>
+<style>
+  /* 整窗可拖动（Electron -webkit-app-region），canvas 区域交还给鼠标交互 */
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
+               -webkit-app-region: drag; }
+  canvas { -webkit-app-region: no-drag; }
+</style>
+</head>
+<body>
+<canvas id="avatarCanvas"></canvas>
+<script>
+  const canvas = document.getElementById('avatarCanvas');
+  const fit = () => { canvas.width = innerWidth; canvas.height = innerHeight; };
+  fit();
+  window.addEventListener('resize', fit);
+</script>
+<script src="/live2d/live2dcubismcore.min.js"></script>
+<script src="/live2d/vendor/pixi.min.js"></script>
+<script src="/live2d/vendor/cubism4.min.js"></script>
+<script src="/live2d/avatar.js"></script>
+<script>
+  Avatar.mount(document.getElementById('avatarCanvas'));
+</script>
+</body>
+</html>

@@ -111,6 +111,7 @@
       const box = canvas.closest('.avatar-box');
       // removeView=false：渲染循环照停（彻底停渲染），但 canvas 节点保留给隐藏的容器
       if (app) { try { app.destroy(false, { children: true, texture: true }); } catch {} app = null; }
+      model = null;   // 同步清引用：防降级后 onMove 残留窗口对已销毁模型调 focus
       paused = true;
       if (box) box.style.display = 'none';
       return false;
