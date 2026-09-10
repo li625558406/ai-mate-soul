@@ -222,6 +222,10 @@ export class DatabaseManager {
     try { this.db.prepare(`ALTER TABLE characters_state ADD COLUMN busy_activity TEXT DEFAULT ''`).run(); } catch { /* exists */ }
     try { this.db.prepare(`ALTER TABLE characters_state ADD COLUMN busy_message_count INTEGER DEFAULT 0`).run(); } catch { /* exists */ }
 
+    // Migration: 冷战和解机制字段
+    try { this.db.prepare(`ALTER TABLE characters_state ADD COLUMN cold_war_reason TEXT DEFAULT NULL`).run(); } catch { /* exists */ }
+    try { this.db.prepare(`ALTER TABLE characters_state ADD COLUMN cold_war_phrases TEXT DEFAULT NULL`).run(); } catch { /* exists */ }
+
     // Migration: annoyance_level → mood_level
     try {
       this.db.prepare(`ALTER TABLE characters_state RENAME COLUMN annoyance_level TO mood_level`).run();
@@ -561,6 +565,61 @@ export class DatabaseManager {
       `UPDATE characters_state SET mood_level = MAX(-100, MIN(100, mood_level + ?)), updated_at = datetime('now', 'localtime')
        WHERE user_id = ? AND character_id = ?`
     ).run(amount, userId, characterId);
+  }
+
+  // ==================== 冷战和解 ====================
+
+  /** 记录冷战原因与动态短语（phraseJson 为 null 表示清除短语，reason 为 null 表示清除原因） */
+  updateColdWarMeta(userId, characterId, reason, phrasesJson) {
+    this.db.prepare(
+      `UPDATE characters_state SET cold_war_reason = ?, cold_war_phrases = ?, updated_at = datetime('now', 'localtime')
+       WHERE user_id = ? AND character_id = ?`
+    ).run(reason, phrasesJson, userId, characterId);
+  }
+
+  /** 读取冷战短语池（JSON 数组），无则返回空数组 */
+  getColdWarPhrases(userId, characterId) {
+    const row = this.db.prepare(
+      `SELECT cold_war_phrases FROM characters_state WHERE user_id = ? AND character_id = ?`
+    ).get(userId, characterId);
+    if (!row?.cold_war_phrases) return [];
+    try { return JSON.parse(row.cold_war_phrases); } catch { return []; }
+  }
+
+  /** 消耗一条冷战短语（队首 shift），用尽自动清空字段 */
+  consumeColdWarPhrase(userId, characterId) {
+    const phrases = this.getColdWarPhrases(userId, characterId);
+    phrases.shift();
+    this.db.prepare(
+      `UPDATE characters_state SET cold_war_phrases = ?, updated_at = datetime('now', 'localtime')
+       WHERE user_id = ? AND character_id = ?`
+    ).run(phrases.length ? JSON.stringify(phrases) : null, userId, characterId);
+  }
+
+  /** 查找所有冷战已到期但未清理的状态（供主动和解检查器使用） */
+  getExpiredColdWars(nowIso) {
+    return this.db.prepare(
+      `SELECT user_id, character_id, cold_war_reason, mood_level FROM characters_state
+       WHERE cold_war_until IS NOT NULL AND cold_war_until <= ?`
+    ).all(nowIso);
+  }
+
+  /** 和解：清冷战字段、心情部分恢复、情绪状态重算 */
+  reconcileColdWar(userId, characterId, newMood, newState) {
+    this.db.prepare(
+      `UPDATE characters_state SET cold_war_until = NULL, cold_war_reason = NULL, cold_war_phrases = NULL,
+       mood_level = ?, emotion_state = ?, updated_at = datetime('now', 'localtime')
+       WHERE user_id = ? AND character_id = ?`
+    ).run(newMood, newState, userId, characterId);
+  }
+
+  /** 最近一篇日记（date 之前，含更早），无则 null */
+  getLatestDiaryBefore(userId, characterId, date) {
+    return this.db.prepare(
+      `SELECT diary_date, content FROM diaries
+       WHERE user_id = ? AND character_id = ? AND diary_date < ?
+       ORDER BY diary_date DESC LIMIT 1`
+    ).get(userId, characterId, date) || null;
   }
 
   // ==================== Anniversaries ====================
