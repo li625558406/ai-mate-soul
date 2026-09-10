@@ -1,137 +1,155 @@
 /**
- * MultimodalService - 多模态感官集成
+ * MultimodalService - TTS 语音合成（火山豆包语音）
  *
- * TTS: 阿里云 DashScope Qwen3-TTS-Instruct-Flash API
- * 每个角色绑定固定音色，音色匹配角色性格
- * 支持 instructions 参数控制情感、语速、语调
- * 非流式模式：API 返回音频 URL → 下载音频 → 返回 Buffer
+ * API: 单向流式语音合成 HTTP（seed-tts-2.0）
+ *   POST https://openspeech.bytedance.com/api/v3/tts/unidirectional
+ *   鉴权: X-Api-Key（火山新版控制台）
+ *   响应: HTTP Chunked，多段 JSON，data 字段为 base64 音频分片
+ * 音色: 运行时读角色档案 voice_preset（火山音色 ID，与实时通话通用）
+ * 情绪/语气: 角色 speaking_style + 情绪指令经 context_texts 指令遵循注入（指令文字不计费）
  */
+import crypto from 'crypto';
+import { DEFAULT_SPEAKER } from './VoiceCatalog.js';
+
+const TTS_ENDPOINT = 'https://openspeech.bytedance.com/api/v3/tts/unidirectional';
+
+// 情绪 → 语音指令映射（沿用原 DashScope 版情绪语义）
+const EMOTION_CONTEXT = {
+  joyful: '你现在心情很好，用欢快上扬、带着笑意的语气说话',
+  happy: '你现在心情不错，用温暖轻快、带着微笑的语气说话',
+  uneasy: '你现在很不高兴，用冷淡、不耐烦的语气说话，句子变短',
+  angry: '你现在特别生气，用压着火、每个字都带怒气的语气说话',
+  cold_war: '你现在极度冷淡，用平直、敷衍、惜字如金、不想搭理人的语气说话',
+};
+
 export class MultimodalService {
-  constructor({ apiKey, baseURL }) {
+  /** @param {{ apiKey: string, resourceId?: string, characterManager: object }} config */
+  constructor({ apiKey, resourceId = 'seed-tts-2.0', characterManager }) {
     this._apiKey = apiKey;
-    this._baseUrl = this._normalizeBaseURL(baseURL);
-    this._model = 'qwen3-tts-instruct-flash';
-
-    // 角色 → 音色 + 基础情感指令
-    this._characterVoices = {
-      reina_001: {
-        voice: 'Cherry',
-        label: '芊悦（阳光积极、亲切自然小姐姐）',
-        baseInstruction: '傲娇女生，说话带着小脾气，偶尔毒舌但内心温柔，语速偏快，语调有起伏，带点小傲娇的尾音',
-      },
-      miku_002: {
-        voice: 'Chelsie',
-        label: '千雪（二次元虚拟女友）',
-        baseInstruction: '活泼可爱的元气少女，说话充满活力，语速较快，语调上扬，偶尔带点撒娇的语气',
-      },
-      yuki_003: {
-        voice: 'Maia',
-        label: '四月（知性与温柔的碰撞）',
-        baseInstruction: '成熟知性的御姐，说话沉稳有磁性，语速适中，语调温柔但有力，偶尔带点慵懒',
-      },
-      lin_004: {
-        voice: 'Serena',
-        label: '苏瑶（温柔小姐姐）',
-        baseInstruction: '温柔体贴的邻家姐姐，说话轻柔细腻，语速偏慢，语调温暖甜美，像贴心朋友般关怀',
-      },
-    };
-
-    // 情绪 → 情感指令映射
-    this._emotionInstructions = {
-      calm: '',
-      joyful: '语气欢快，语调上扬，带着笑意，说话轻快活泼',
-      happy: '语气温暖，语调轻快，带着微笑',
-      uneasy: '语气明显冷淡，语调下沉，说话变短，带着不满和不耐烦',
-      angry: '语气带刺，语调压低，语速变慢但每个字都带着怒气，像在压着火说话',
-      cold_war: '极度冷淡，惜字如金，语调平直没有感情，像在敷衍不想搭理的人',
-    };
-  }
-
-  /** Base URL 归一：留空走默认；只填主机则自动补 DashScope API 路径 */
-  _normalizeBaseURL(url) {
-    const DEFAULT = 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation';
-    if (!url) return DEFAULT;
-    const u = String(url).trim().replace(/\/+$/, '');
-    return /\/api\//.test(u) ? u : `${u}/api/v1/services/aigc/multimodal-generation/generation`;
+    this._resourceId = resourceId;
+    this._characterManager = characterManager;
   }
 
   /** 运行时刷新配置（设置保存后立即生效） */
-  updateConfig({ apiKey, baseURL }) {
+  updateConfig({ apiKey, resourceId }) {
     if (apiKey) this._apiKey = apiKey;
-    if (baseURL !== undefined) this._baseUrl = this._normalizeBaseURL(baseURL);
+    if (resourceId) this._resourceId = resourceId;
+  }
+
+  /** 角色音色：voice_preset 优先，缺省回退默认音色 */
+  _resolveSpeaker(characterId) {
+    const c = this._characterManager?.getCharacter(characterId);
+    return (c?.voice_preset && String(c.voice_preset).trim()) || DEFAULT_SPEAKER;
+  }
+
+  /** 组装 context_texts：角色说话风格 + 当前情绪指令 */
+  _buildContexts(characterId, emotionState) {
+    const c = this._characterManager?.getCharacter(characterId);
+    const contexts = [];
+    const style = c?.speaking_style && String(c.speaking_style).trim();
+    if (style) contexts.push(`你的说话风格：${style}。请始终用这种风格说话`);
+    const emotionHint = EMOTION_CONTEXT[emotionState];
+    if (emotionHint) contexts.push(emotionHint);
+    return contexts;
   }
 
   /**
    * 语音合成
-   * @param {{ text: string, characterId: string, emotionState?: string }} params
-   * @returns {Promise<Buffer>} audio buffer
+   * @param {{ text: string, characterId: string, emotionState?: string, speaker?: string }} params
+   * @returns {Promise<Buffer>} mp3 audio buffer
    */
-  async synthesizeSpeech({ text, characterId, emotionState = 'calm' }) {
-    const voiceConfig = this._characterVoices[characterId] || this._characterVoices.reina_001;
+  async synthesizeSpeech({ text, characterId, emotionState = 'calm', speaker }) {
+    const voice = (speaker && speaker.trim()) || this._resolveSpeaker(characterId);
+    const context_texts = this._buildContexts(characterId, emotionState);
 
-    // 构建情感指令：基础性格 + 当前情绪
-    let instructions = voiceConfig.baseInstruction;
-    const emotionHint = this._emotionInstructions[emotionState];
-    if (emotionHint) {
-      instructions += '。' + emotionHint;
-    }
-
-    const requestBody = {
-      model: this._model,
-      input: {
-        text,
-        voice: voiceConfig.voice,
-        language_type: 'Chinese',
-      },
-      parameters: {
-        instructions,
-        optimize_instructions: true,
-      },
-    };
-
-    console.log(`[MultimodalService] TTS 请求: voice=${voiceConfig.voice}, emotion=${emotionState}, instructions="${instructions.slice(0, 80)}..."`);
-
-    const response = await fetch(this._baseUrl, {
+    const t0 = Date.now();
+    const response = await fetch(TTS_ENDPOINT, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${this._apiKey}`,
+        'X-Api-Key': this._apiKey,
+        'X-Api-Resource-Id': this._resourceId,
+        'X-Api-Request-Id': crypto.randomUUID(),
         'Content-Type': 'application/json',
+        'Connection': 'keep-alive',
       },
-      body: JSON.stringify(requestBody),
+      body: JSON.stringify({
+        req_params: {
+          text,
+          speaker: voice,
+          audio_params: { format: 'mp3', sample_rate: 24000 },
+          ...(context_texts.length ? { context_texts } : {}),
+        },
+      }),
     });
 
     if (!response.ok) {
       const errText = await response.text();
-      throw new Error(`DashScope TTS 失败 (${response.status}): ${errText}`);
+      throw new Error(this._explainError(response.status, errText));
     }
 
-    const result = await response.json();
-
-    const audioUrl = result?.output?.audio?.url;
-    if (!audioUrl) {
-      throw new Error(`DashScope TTS 响应中未找到音频 URL: ${JSON.stringify(result).slice(0, 200)}`);
-    }
-
-    const audioResp = await fetch(audioUrl);
-    if (!audioResp.ok) {
-      throw new Error(`下载音频失败 (${audioResp.status}): ${audioUrl}`);
-    }
-
-    const arrayBuffer = await audioResp.arrayBuffer();
-    return Buffer.from(arrayBuffer);
+    const buffer = await this._collectAudio(response);
+    console.log(`[MultimodalService] TTS 完成: voice=${voice}, emotion=${emotionState}, ${text.length}字, ${Date.now() - t0}ms, ${buffer.length}B`);
+    return buffer;
   }
 
-  getCharacterVoice(characterId) {
-    const config = this._characterVoices[characterId];
-    if (!config) return null;
-    return { characterId, voice: config.voice, label: config.label };
+  /** 读取 chunked 响应体，解析多段 JSON，拼接 base64 音频分片 */
+  async _collectAudio(response) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let raw = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      raw += decoder.decode(value, { stream: true });
+    }
+    raw += decoder.decode();
+
+    const chunks = [];
+    for (const seg of this._splitJsonObjects(raw)) {
+      if (seg.data) {
+        chunks.push(Buffer.from(seg.data, 'base64'));
+      } else if (seg.code !== undefined && seg.code !== 0) {
+        throw new Error(`火山 TTS 分片错误 code=${seg.code}: ${seg.message || ''}`);
+      }
+    }
+    if (!chunks.length) {
+      throw new Error(`火山 TTS 响应中无音频数据: ${raw.slice(0, 200)}`);
+    }
+    return Buffer.concat(chunks);
   }
 
-  getVoicePresets() {
-    return Object.entries(this._characterVoices).map(([characterId, config]) => ({
-      characterId,
-      voice: config.voice,
-      label: config.label,
-    }));
+  /** 按括号配平从流式文本中切出完整 JSON 对象（容忍半包/粘包/字符串内花括号） */
+  _splitJsonObjects(raw) {
+    const objects = [];
+    let depth = 0, start = -1, inStr = false, esc = false;
+    for (let i = 0; i < raw.length; i++) {
+      const ch = raw[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (ch === '\\') esc = true;
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') { inStr = true; continue; }
+      if (ch === '{') { if (depth === 0) start = i; depth++; }
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0 && start >= 0) {
+          try { objects.push(JSON.parse(raw.slice(start, i + 1))); } catch { /* 跳过坏段 */ }
+          start = -1;
+        }
+      }
+    }
+    return objects;
+  }
+
+  /** 错误信息翻译：把火山错误码转成用户可操作的提示 */
+  _explainError(status, body) {
+    let code, msg = '';
+    try { const j = JSON.parse(body); code = j?.header?.code ?? j?.code; msg = j?.header?.message ?? j?.message ?? ''; } catch { /* 保留原文 */ }
+    if (status === 401) return '火山 TTS 鉴权失败(401)：请检查设置页的火山 API Key';
+    if (code === 45000030 || /not granted/i.test(msg)) return '资源未开通(45000030)：请在火山控制台开通「豆包语音合成大模型 2.0」';
+    if (/InvalidSpeaker/i.test(msg)) return `音色 ID 无效：请检查角色档案的 voice_preset`;
+    return `火山 TTS 失败 (HTTP ${status})${code ? ` code=${code}` : ''}: ${msg || String(body).slice(0, 160)}`;
   }
 }

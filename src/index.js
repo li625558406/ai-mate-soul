@@ -65,7 +65,7 @@ const timeService = new TimeService(llmProvider, defaultProvider);
 const growthService = new GrowthService();
 const emotionStateMachine = new EmotionStateMachine();
 const environmentService = new EnvironmentService();
-const multimodalService = new MultimodalService({ apiKey: settings.tts.apiKey, baseURL: settings.tts.baseURL });
+const multimodalService = new MultimodalService({ apiKey: settings.tts.apiKey, resourceId: settings.tts.resourceId, characterManager });
 
 const diaryService = new DiaryService({ llmProvider, db, characterManager, provider: defaultProvider });
 const lifecycleService = new LifecycleService();
@@ -759,7 +759,7 @@ app.put('/api/settings', (req, res) => {
   // Reload service API keys
   imageService.updateConfig({ apiKey: raw.image.apiKey, baseURL: raw.image.baseURL, model: raw.image.model });
   videoService.updateConfig({ apiKey: raw.video.apiKey, baseURL: raw.video.baseURL, model: raw.video.model, maxDuration: raw.video.maxDuration });
-  multimodalService.updateConfig({ apiKey: raw.tts.apiKey, baseURL: raw.tts.baseURL });
+  multimodalService.updateConfig({ apiKey: raw.tts.apiKey, resourceId: raw.tts.resourceId });
   if (raw.tts.apiKey) {
     voiceCallService._apiKey = raw.tts.apiKey;
   }
