@@ -2,7 +2,7 @@
 import { app, session, dialog } from 'electron';
 import net from 'node:net';
 import { PORT, ROOT_DIR as ROOT } from './config.js';
-import { start as startService, stop as stopService, waitHealth } from './serviceManager.js';
+import { start as startService, stop as stopService, waitHealth, getLogTail } from './serviceManager.js';
 import { createMainWindow, showMainWindow } from './windows.js';
 import { createTray } from './tray.js';
 
@@ -43,7 +43,8 @@ async function boot() {
   startService(ROOT);
   const ok = await waitHealth();
   if (!ok) {
-    dialog.showErrorBox('后端服务未就绪', '等待 30 秒后服务仍未启动，请检查端口与依赖后重试。');
+    dialog.showErrorBox('后端服务未就绪',
+      '等待 30 秒后服务仍未启动。子进程日志尾部：\n\n' + getLogTail());
     app.quit();
     return;
   }

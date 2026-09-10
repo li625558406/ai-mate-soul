@@ -11,6 +11,8 @@ let child = null;
 let stopping = false;
 let consecutiveFails = 0;
 let startedAt = 0;
+let spawnBroken = false;            // spawn 本身失败（如 node 可执行文件不存在），禁止再重启
+let restartTimer = null;            // 重启延迟定时器，stop/start 时需清掉避免竞态
 const logTail = [];                 // 子进程日志尾部（崩溃弹窗展示用）
 const stateListeners = [];
 
@@ -37,7 +39,9 @@ function pushLog(stream, chunk) {
 }
 
 export function start(rootDir) {
+  clearTimeout(restartTimer);
   stopping = false;
+  spawnBroken = false;
   _spawn(rootDir);
 }
 
@@ -53,7 +57,7 @@ function _spawn(rootDir) {
   child.stderr.on('data', (c) => pushLog(process.stderr, c));
 
   child.on('exit', (code) => {
-    if (stopping) return;
+    if (stopping || spawnBroken) return;
     emitState('down', { code });
     // 稳定运行过则重置计数
     if (Date.now() - startedAt > STABLE_RUN_MS) consecutiveFails = 0;
@@ -64,16 +68,26 @@ function _spawn(rootDir) {
     }
     const delay = Math.min(30_000, 1000 * 2 ** (consecutiveFails - 1));
     emitState('restarting', { delay, consecutiveFails });
-    setTimeout(() => { if (!stopping) _spawn(rootDir); }, delay);
+    restartTimer = setTimeout(() => { if (!stopping && !spawnBroken) _spawn(rootDir); }, delay);
+  });
+
+  // node 可执行文件不存在等 spawn 失败：'error' 事件无监听会以未捕获异常击穿主进程
+  child.on('error', (err) => {
+    if (spawnBroken || stopping) return;
+    spawnBroken = true;
+    emitState('failed', { log: `spawn 失败: ${err.message}\n${getLogTail()}` });
   });
 }
 
 export function stop() {
+  clearTimeout(restartTimer);
   stopping = true;
   if (!child) return;
   if (process.platform === 'win32') {
-    // Windows 下杀整棵进程树，避免子进程残留占用端口
-    spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
+    // Windows 下杀整棵进程树，避免子进程残留占用端口；spawn 失败时 pid 为空直接跳过
+    if (child.pid) {
+      spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
+    }
   } else {
     child.kill('SIGTERM');
   }
