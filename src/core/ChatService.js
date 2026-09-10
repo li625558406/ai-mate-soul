@@ -399,11 +399,21 @@ export class ChatService {
       replyText = replyText.replace(/\[去忙:[^\]]+\]/g, '').trim();
     }
 
-    // 13. 模拟流式输出 reply（每 2-3 个字符一个 chunk）
-    if (replyText) {
-      const chunkSize = 2;
-      for (let i = 0; i < replyText.length; i += chunkSize) {
-        yield { type: 'chunk', data: replyText.slice(i, i + chunkSize) };
+    // 13. 分条拟真推送（微信式连发：按情绪延迟 + 条间停顿）
+    const segments = replyText.split(/\n+/).map(s => s.trim()).filter(Boolean);
+    const msgSegments = segments.length > 0 ? segments : (replyText.trim() ? [replyText.trim()] : []);
+    if (msgSegments.length > 0) {
+      await this._sleep(this._calcReplyDelay(emotionResult.emotionState, justWokenUp, msgSegments[0].length));
+      for (let s = 0; s < msgSegments.length; s++) {
+        const seg = msgSegments[s];
+        for (let i = 0; i < seg.length; i += 2) {
+          yield { type: 'chunk', data: seg.slice(i, i + 2) };
+        }
+        if (s < msgSegments.length - 1) {
+          yield { type: 'message_end' };
+          yield { type: 'typing', data: { show: true } };
+          await this._sleep(600 + Math.floor(Math.random() * 900));
+        }
       }
     }
 
