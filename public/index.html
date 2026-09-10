@@ -732,6 +732,55 @@ socket.on('connect', () => {
   }
 });
 
+// ===== 形象联动生产者：采集音频振幅/情绪，广播给所有 avatar 实例（含小窗） =====
+const AvatarBridge = {
+  selfAmplitude(v) { window.Avatar && window.Avatar.applyAmplitude && window.Avatar.applyAmplitude(v); },
+};
+let avatarCh = null, avatarAudioCtx = null, ampRaf = 0;
+function getAvatarChannel() {
+  if (!avatarCh) avatarCh = new BroadcastChannel('avatar');
+  return avatarCh;
+}
+function broadcastAvatar(msg) { try { getAvatarChannel().postMessage(msg); } catch {} }
+
+// 用 AnalyserNode 持续采集 RMS 振幅 → ParamMouthOpenY 目标值
+function trackAmplitude(analyser) {
+  cancelAnimationFrame(ampRaf);
+  const buf = new Uint8Array(analyser.fftSize);
+  const loop = () => {
+    analyser.getByteTimeDomainData(buf);
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) { const d = (buf[i] - 128) / 128; sum += d * d; }
+    const rms = Math.sqrt(sum / buf.length);
+    const v = Math.min(1, rms * 6); // 增益系数，让正常说话音量能达到明显开口
+    broadcastAvatar({ type: 'amplitude', v });
+    AvatarBridge.selfAmplitude(v);
+    ampRaf = requestAnimationFrame(loop);
+  };
+  ampRaf = requestAnimationFrame(loop);
+}
+
+// 给 <audio> 挂分析器并返回 audio；替代裸 new Audio(url)，三处播放点统一走这里
+function playWithAvatar(url) {
+  const audio = new Audio(url);
+  try {
+    avatarAudioCtx = avatarAudioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (avatarAudioCtx.state === 'suspended') avatarAudioCtx.resume();
+    const src = avatarAudioCtx.createMediaElementSource(audio);
+    const analyser = avatarAudioCtx.createAnalyser();
+    analyser.fftSize = 512;
+    src.connect(analyser);
+    analyser.connect(avatarAudioCtx.destination);
+    audio._analyser = analyser;
+    audio.onplay = () => trackAmplitude(analyser);
+    audio.onpause = audio.onended = () => { cancelAnimationFrame(ampRaf); broadcastAvatar({ type: 'amplitude', v: 0 }); };
+  } catch (e) { console.warn('振幅分析不可用，仅播放音频', e); }
+  return audio;
+}
+
+// 情绪广播入口（Task 9 的 socket 监听调用）
+function broadcastEmotion(state) { broadcastAvatar({ type: 'emotion', state }); }
+
 (async () => {
   await loadCharacters();
   refreshCfgStatus();
@@ -1258,7 +1307,7 @@ function playVoice(el, filename) {
     icon.textContent = '▶';
     return;
   }
-  const audio = new Audio('/voices/' + encodeURIComponent(filename));
+  const audio = playWithAvatar('/voices/' + encodeURIComponent(filename));
   el._audio = audio;
   icon.textContent = '⏸';
   audio.onended = () => { icon.textContent = '▶'; };
@@ -1339,7 +1388,7 @@ function playTTS() {
     return r.blob();
   }).then(blob => {
     const url = URL.createObjectURL(blob);
-    const audio = new Audio(url);
+    const audio = playWithAvatar(url);
     audio.onended = () => { URL.revokeObjectURL(url); ttsBtn.disabled = false; ttsBtn.style.opacity = ''; };
     audio.onerror = () => { URL.revokeObjectURL(url); ttsBtn.disabled = false; ttsBtn.style.opacity = ''; };
     audio.play();
@@ -2268,7 +2317,7 @@ async function previewCeVoice() {
     });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
     const blob = await res.blob();
-    const audio = new Audio(URL.createObjectURL(blob));
+    const audio = playWithAvatar(URL.createObjectURL(blob));
     audio.onended = () => URL.revokeObjectURL(audio.src);
     audio.play();
   } catch (e) {
