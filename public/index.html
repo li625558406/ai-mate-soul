@@ -796,9 +796,10 @@ function playWithAvatar(url) {
 // 情绪广播入口（Task 9 的 socket 监听调用）
 function broadcastEmotion(state) { broadcastAvatar({ type: 'emotion', state }); }
 
-// 后端聊天结算后推送的情绪状态 → 转发给 Live2D 形象
+// 后端聊天结算后推送的情绪状态 → 转发给 Live2D 形象（校验 userId，防止多用户情绪串扰）
 socket.on('avatar:emotion', (d) => {
-  if (d.characterId === currentCharacterId) broadcastEmotion(d.emotionState);
+  const uid = document.getElementById('userId').value;
+  if (d.characterId === currentCharacterId && d.userId === uid) broadcastEmotion(d.emotionState);
 });
 
 (async () => {

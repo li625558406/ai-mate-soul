@@ -499,7 +499,7 @@ app.post('/api/chat', async (req, res) => {
   // Live2D 形象情绪推送：聊天结算后把最新情绪状态广播给前端形象
   try {
     const st = db.ensureCharacterState(userId, characterId);
-    io.emit('avatar:emotion', { characterId, emotionState: st.emotion_state || 'calm', moodLevel: st.mood_level || 0 });
+    io.emit('avatar:emotion', { userId, characterId, emotionState: st.emotion_state || 'calm', moodLevel: st.mood_level || 0 });
   } catch (e) {
     console.warn('[avatar:emotion] 推送失败:', e.message);
   }
