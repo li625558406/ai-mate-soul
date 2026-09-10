@@ -32,11 +32,19 @@ export class MemoryService {
     let db;
 
     if (fs.existsSync(filePath)) {
+      let raw = null;
       try {
-        const raw = fs.readFileSync(filePath, 'utf-8');
-        db = await load(JSON.parse(raw));
+        raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+        // 旧格式检测：索引属性中无 grams（english tokenizer 时代无法索引中文）→ 重建
+        if (!raw?.index?.indexes || !('grams' in raw.index.indexes)) {
+          throw new Error('legacy-schema');
+        }
+        const freshDb = await this._createDb();
+        load(freshDb, raw);
+        db = freshDb;
       } catch {
-        db = await this._createDb();
+        // 旧格式 / 损坏文件：用旧文档重建索引
+        db = await this._rebuildDb(raw);
       }
     } else {
       db = await this._createDb();
@@ -48,6 +56,7 @@ export class MemoryService {
   }
 
   async _createDb() {
+    // 自定义 tokenizer：CJK 2-gram + 拉丁词。默认 english tokenizer 会丢弃全部中文 token
     return await create({
       schema: {
         id: 'string',
@@ -56,9 +65,75 @@ export class MemoryService {
         summary: 'string',
         emotionLabel: 'string',
         timestamp: 'string',
+        grams: 'string',
       },
-      language: 'english',
+      components: { tokenizer: this._makeTokenizer() },
     });
+  }
+
+  /** 中文 2-gram + 拉丁词切分（建索引与查询共用） */
+  _tokenizeTerms(text) {
+    const segments = String(text)
+      .replace(/[^\u4e00-\u9fff\u3400-\u4dbfa-zA-Z0-9]/g, ' ')
+      .split(/\s+/)
+      .filter(s => s.length > 0);
+
+    const terms = [];
+    for (const seg of segments) {
+      if (/[\u4e00-\u9fff]/.test(seg)) {
+        if (seg.length <= 2) {
+          terms.push(seg);
+        } else {
+          for (let i = 0; i <= seg.length - 2; i++) {
+            terms.push(seg.slice(i, i + 2));
+          }
+        }
+      } else {
+        terms.push(seg.toLowerCase());
+      }
+    }
+    return [...new Set(terms)];
+  }
+
+  /** Orama 自定义 tokenizer（接口要求 language / normalizationCache / tokenize） */
+  _makeTokenizer() {
+    const self = this;
+    return {
+      language: 'english',
+      normalizationCache: new Map(),
+      tokenize(raw) {
+        return self._tokenizeTerms(raw);
+      },
+    };
+  }
+
+  /**
+   * 用旧 dump 的文档重建索引（补算 grams，处理 schema 不匹配/损坏场景）
+   */
+  async _rebuildDb(rawDump) {
+    const db = await this._createDb();
+    // Orama 3.x: rawDump.docs.docs；兼容更早的 documents.store 形态
+    const store = rawDump?.docs?.docs || rawDump?.documents?.store || {};
+    const docs = Object.values(store);
+    for (const doc of docs) {
+      try {
+        await insert(db, {
+          id: doc.id || `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          userMessage: doc.userMessage || '',
+          aiResponse: doc.aiResponse || '',
+          summary: doc.summary || '',
+          emotionLabel: doc.emotionLabel || 'neutral',
+          timestamp: doc.timestamp || new Date().toISOString(),
+          grams: this._gramsFor(doc.userMessage || '', doc.summary || ''),
+        });
+      } catch { /* 单条坏数据跳过 */ }
+    }
+    if (docs.length > 0) console.log(`[MemoryService] 旧记忆索引重建完成: ${docs.length} 条`);
+    return db;
+  }
+
+  _gramsFor(userMessage, summary) {
+    return this._tokenizeTerms(`${userMessage} ${summary}`).join(' ');
   }
 
   /** 持久化到磁盘 */
@@ -89,6 +164,7 @@ export class MemoryService {
       summary: summary || '',
       emotionLabel: emotionLabel || 'neutral',
       timestamp: new Date().toISOString(),
+      grams: this._gramsFor(userMessage, summary || ''),
     });
 
     await this._persist(key);
@@ -103,7 +179,7 @@ export class MemoryService {
     const { db } = await this._getOrInit(userId, characterId);
 
     // 对用户输入分词后搜索（Orama 中文全文搜索）
-    const terms = this._extractTerms(query);
+    const terms = this._tokenizeTerms(query);
     const results = [];
 
     for (const term of terms) {
@@ -111,7 +187,7 @@ export class MemoryService {
       try {
         const res = await search(db, {
           term,
-          properties: ['userMessage', 'summary'],
+          properties: ['grams'],
           limit: 5,
         });
         for (const hit of res.hits) {
@@ -125,34 +201,6 @@ export class MemoryService {
     }
 
     return results.slice(0, limit).map(r => r.document);
-  }
-
-  /**
-   * 简易中文分词：按标点和空格切分，过滤短词
-   */
-  _extractTerms(text) {
-    // 保留中文、英文、数字，按标点分割
-    const segments = text
-      .replace(/[^\u4e00-\u9fff\u3400-\u4dbfa-zA-Z0-9]/g, ' ')
-      .split(/\s+/)
-      .filter(s => s.length > 0);
-
-    const terms = [];
-    for (const seg of segments) {
-      if (/[\u4e00-\u9fff]/.test(seg)) {
-        // 中文：2-gram 滑动窗口
-        if (seg.length <= 4) {
-          terms.push(seg);
-        } else {
-          for (let i = 0; i <= seg.length - 2; i++) {
-            terms.push(seg.slice(i, i + 2));
-          }
-        }
-      } else {
-        terms.push(seg.toLowerCase());
-      }
-    }
-    return [...new Set(terms)];
   }
 
   /** 关闭时持久化所有实例 */
