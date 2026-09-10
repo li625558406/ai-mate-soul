@@ -26,7 +26,7 @@ export class MultimodalService {
   /** @param {{ apiKey: string, resourceId?: string, characterManager: object }} config */
   constructor({ apiKey, resourceId = 'seed-tts-2.0', characterManager }) {
     this._apiKey = apiKey;
-    this._resourceId = resourceId;
+    this._resourceId = resourceId || 'seed-tts-2.0';
     this._characterManager = characterManager;
   }
 
