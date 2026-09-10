@@ -736,7 +736,16 @@ socket.on('connect', () => {
 const AvatarBridge = {
   selfAmplitude(v) { window.Avatar && window.Avatar.applyAmplitude && window.Avatar.applyAmplitude(v); },
 };
-let avatarCh = null, avatarAudioCtx = null, ampRaf = 0;
+let avatarCh = null, avatarAudioCtx = null, ampRaf = 0, ampOwner = null;
+
+// 首次用户点击时预热音频上下文（Safari 要求在手势栈内创建/恢复，否则 TTS 可能静音）
+document.addEventListener('click', () => {
+  try {
+    avatarAudioCtx = avatarAudioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (avatarAudioCtx.state !== 'running') avatarAudioCtx.resume().catch(() => {});
+  } catch {}
+}, { once: true });
+
 function getAvatarChannel() {
   if (!avatarCh) avatarCh = new BroadcastChannel('avatar');
   return avatarCh;
@@ -746,6 +755,7 @@ function broadcastAvatar(msg) { try { getAvatarChannel().postMessage(msg); } cat
 // 用 AnalyserNode 持续采集 RMS 振幅 → ParamMouthOpenY 目标值
 function trackAmplitude(analyser) {
   cancelAnimationFrame(ampRaf);
+  ampOwner = analyser;
   const buf = new Uint8Array(analyser.fftSize);
   const loop = () => {
     analyser.getByteTimeDomainData(buf);
@@ -765,7 +775,7 @@ function playWithAvatar(url) {
   const audio = new Audio(url);
   try {
     avatarAudioCtx = avatarAudioCtx || new (window.AudioContext || window.webkitAudioContext)();
-    if (avatarAudioCtx.state === 'suspended') avatarAudioCtx.resume();
+    if (avatarAudioCtx.state !== 'running') avatarAudioCtx.resume().catch(() => {});
     const src = avatarAudioCtx.createMediaElementSource(audio);
     const analyser = avatarAudioCtx.createAnalyser();
     analyser.fftSize = 512;
@@ -773,7 +783,12 @@ function playWithAvatar(url) {
     analyser.connect(avatarAudioCtx.destination);
     audio._analyser = analyser;
     audio.onplay = () => trackAmplitude(analyser);
-    audio.onpause = audio.onended = () => { cancelAnimationFrame(ampRaf); broadcastAvatar({ type: 'amplitude', v: 0 }); };
+    audio.onpause = audio.onended = () => {
+      if (ampOwner !== analyser) return; // 该音频已不持有振幅循环（已被新音频接管），不能误关嘴型
+      cancelAnimationFrame(ampRaf);
+      ampOwner = null;
+      broadcastAvatar({ type: 'amplitude', v: 0 });
+    };
   } catch (e) { console.warn('振幅分析不可用，仅播放音频', e); }
   return audio;
 }
