@@ -631,7 +631,13 @@ body.view-chat #homePane { display:none; }
       <div class="field"><label>性格</label><textarea id="cePersonality" rows="2"></textarea></div>
       <div class="field"><label>背景故事</label><textarea id="ceBackground" rows="4"></textarea></div>
       <div class="field"><label>说话风格</label><textarea id="ceSpeaking" rows="2"></textarea></div>
-      <div class="field"><label>声音 preset（TTS）</label><input type="text" id="ceVoice" placeholder="Jennifer" autocomplete="off"></div>
+      <div class="field"><label>语音音色（TTS 与语音通话通用）</label>
+        <div style="display:flex;gap:8px">
+          <select id="ceVoiceSelect" style="flex:1"></select>
+          <button class="btn-cancel" onclick="previewCeVoice()" title="试听当前选择">&#9654; 试听</button>
+        </div>
+        <input type="text" id="ceVoice" placeholder="自定义火山音色 ID（如声音复刻音色）" autocomplete="off" style="display:none;margin-top:6px">
+      </div>
       <div class="field"><label>爱好（每行一条）</label><textarea id="ceHobbies" rows="4"></textarea></div>
 
       <h4 class="section-title">雷区（触发词为正则）</h4>
@@ -1981,7 +1987,7 @@ function fillCeForm(p) {
   document.getElementById('cePersonality').value = p.base_personality || '';
   document.getElementById('ceBackground').value = p.background || '';
   document.getElementById('ceSpeaking').value = p.speaking_style || '';
-  document.getElementById('ceVoice').value = p.voice_preset || '';
+  populateCeVoiceSelect(p.voice_preset || '');
   document.getElementById('ceHobbies').value = (p.hobbies || []).join('\n');
   const mf = document.getElementById('ceMinefields');
   mf.innerHTML = '';
@@ -2001,7 +2007,7 @@ function gatherCeProfile() {
   p.base_personality = document.getElementById('cePersonality').value.trim();
   p.background = document.getElementById('ceBackground').value.trim();
   p.speaking_style = document.getElementById('ceSpeaking').value.trim();
-  p.voice_preset = document.getElementById('ceVoice').value.trim();
+  p.voice_preset = resolveCeVoice();
   p.hobbies = document.getElementById('ceHobbies').value.split('\n').map(s => s.trim()).filter(Boolean);
   p.minefields = [...document.querySelectorAll('#ceMinefields .ce-mine-row')].map(row => {
     const inputs = row.querySelectorAll('input');
@@ -2028,6 +2034,86 @@ function addCeMineRow(trigger, annoyance, description) {
   row.querySelector('button').onclick = () => row.remove();
   document.getElementById('ceMinefields').appendChild(row);
 }
+
+// ==================== 音色选择 ====================
+
+let voiceCatalogCache = null;
+async function loadVoiceCatalog() {
+  if (voiceCatalogCache) return voiceCatalogCache;
+  try {
+    const res = await fetch(API + '/api/voices');
+    const data = await res.json();
+    voiceCatalogCache = data.voices || [];
+  } catch { voiceCatalogCache = []; }
+  return voiceCatalogCache;
+}
+
+// 填充音色下拉；current 为角色已存音色 ID，不在清单中时切自定义输入框
+async function populateCeVoiceSelect(current) {
+  const select = document.getElementById('ceVoiceSelect');
+  const custom = document.getElementById('ceVoice');
+  const catalog = await loadVoiceCatalog();
+  select.innerHTML = '';
+  for (const v of catalog) {
+    const opt = document.createElement('option');
+    opt.value = v.id;
+    opt.textContent = `${v.name}（${v.tag}）`;
+    select.appendChild(opt);
+  }
+  const customOpt = document.createElement('option');
+  customOpt.value = '__custom__';
+  customOpt.textContent = '自定义音色 ID…';
+  select.appendChild(customOpt);
+
+  const isKnown = catalog.some(v => v.id === current);
+  if (current && !isKnown) {
+    select.value = '__custom__';
+    custom.style.display = '';
+    custom.value = current;
+  } else {
+    custom.style.display = 'none';
+    custom.value = '';
+    if (current) select.value = current;
+  }
+}
+
+function resolveCeVoice() {
+  const v = document.getElementById('ceVoiceSelect').value;
+  if (v === '__custom__') return document.getElementById('ceVoice').value.trim();
+  return v;
+}
+
+async function previewCeVoice() {
+  const speaker = resolveCeVoice();
+  if (!speaker) {
+    const resultEl = document.getElementById('ceResult');
+    resultEl.className = 'result error';
+    resultEl.textContent = '请先选择或填写音色 ID';
+    return;
+  }
+  try {
+    // 未保存的新角色用 __preview__ 占位（后端 speaker 覆盖优先于角色档案）
+    const res = await fetch(API + '/api/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: '嗨，这是我用这个声音和你说话哦～', characterId: ceState.profile.id || '__preview__', userId: document.getElementById('userId').value, speaker }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+    const blob = await res.blob();
+    const audio = new Audio(URL.createObjectURL(blob));
+    audio.onended = () => URL.revokeObjectURL(audio.src);
+    audio.play();
+  } catch (e) {
+    const resultEl = document.getElementById('ceResult');
+    resultEl.className = 'result error';
+    resultEl.textContent = '试听失败: ' + e.message;
+  }
+}
+
+// 自定义选项切换输入框显隐
+document.getElementById('ceVoiceSelect')?.addEventListener('change', (e) => {
+  document.getElementById('ceVoice').style.display = e.target.value === '__custom__' ? '' : 'none';
+});
 
 // 页签切换（内部版本 setCeTab 不带确认）
 function setCeTab(tab) {
