@@ -62,6 +62,15 @@
     }
   }
 
+  // pixi7 无 InteractionManager，autoInteract 失效：窗口级 mousemove 手动换算焦点
+  // 监听在 window 上，pointer-events:none 的 canvas 也能收到；事件坐标减 canvas 偏移即模型局部坐标
+  // 定义在模块级：降级清理时需要稳定的具名引用 removeEventListener
+  function onMove(e) {
+    if (!model) return;
+    const rect = canvas.getBoundingClientRect();
+    model.focus(e.clientX - rect.left, e.clientY - rect.top);
+  }
+
   // 挂载到指定 canvas；失败返回 false 并隐藏容器（降级链，不阻塞聊天）
   async function mount(canvasEl) {
     // 重入保护：已就绪直接成功；上次 mount 留下半成品 app 时拒绝叠加创建
@@ -90,13 +99,7 @@
         paused = (w === 0 || h === 0);
         if (!paused) { app.renderer.resize(w, h); fit(); }
       }).observe(canvas);
-      // pixi7 无 InteractionManager，autoInteract 失效：窗口级 mousemove 手动换算焦点
-      // 监听在 window 上，pointer-events:none 的 canvas 也能收到；事件坐标减 canvas 偏移即模型局部坐标
-      function onMove(e) {
-        if (!model) return;
-        const rect = canvas.getBoundingClientRect();
-        model.focus(e.clientX - rect.left, e.clientY - rect.top);
-      }
+      // 窗口级 mousemove 视线追踪（onMove 见模块级定义）
       window.addEventListener('mousemove', onMove);
       const ch = new BroadcastChannel(CHANNEL);
       ch.onmessage = (e) => handleMsg(e.data);
@@ -107,6 +110,8 @@
       return true;
     } catch (err) {
       console.warn('[avatar] 形象加载失败，降级为静态参考图:', err.message);
+      // 清理已注册的窗口级监听，防降级后 mousemove 空转（handleMsg 有 model 判空，BroadcastChannel 无需清）
+      window.removeEventListener('mousemove', onMove);
       // 先取容器引用再销毁（destroy 后 canvas 若脱离 DOM，closest 拿不到容器）
       const box = canvas.closest('.avatar-box');
       // removeView=false：渲染循环照停（彻底停渲染），但 canvas 节点保留给隐藏的容器
