@@ -101,6 +101,8 @@ export class ProactiveService {
           hoursAway: Math.round(hoursAway),
         });
         this._lastProactiveSent.set(key, Date.now());
+        // A1: 入库，保证后续对话上下文连贯
+        this.db.saveChatMessage({ userId, characterId, role: 'assistant', content: message });
       }
     } catch (err) {
       console.warn('[ProactiveService] 推送失败:', err.message);
@@ -292,9 +294,15 @@ export class ProactiveService {
 
     const timeDescription = this.timeService.getCurrentTimeDescription();
 
+    // B3: 按优先级选消息源（约定提醒 > 情绪事件 > 日记分享 > 当前活动）
+    const today = new Date().toISOString().slice(0, 10);
+    const pendingPlans = this.db.getPendingPlans(userId, characterId, today);
+    const latestDiary = this.db.getLatestDiaryBefore(userId, characterId, today);
+    const emotionEvent = this.timeService.dailyPlanner?.getActiveEmotionEvent(userId, characterId) || null;
+
     // 生成并推送消息
-    const message = await this._generateTimeBasedProactiveMessage({
-      character, state, activity, timeDescription,
+    const message = await this._generateDiverseProactiveMessage({
+      character, state, activity, timeDescription, pendingPlans, latestDiary, emotionEvent,
     });
 
     if (message) {
@@ -304,6 +312,8 @@ export class ProactiveService {
         message,
       });
       this._lastProactiveSent.set(key, now);
+      // A1: 入库，保证后续对话上下文连贯
+      this.db.saveChatMessage({ userId, characterId, role: 'assistant', content: message });
       console.log(`[ProactiveService] 已推送主动消息 (${character.nickname || character.name}): ${message.slice(0, 40)}...`);
 
       // 好感度 > 80 时 5% 概率主动发图
@@ -314,21 +324,34 @@ export class ProactiveService {
   }
 
   /**
-   * 基于当前活动生成主动消息
+   * 基于多样化消息源生成主动消息（B3）
+   * 优先级：约定提醒 > 情绪事件 > 日记分享 > 当前活动
    */
-  async _generateTimeBasedProactiveMessage({ character, state, activity, timeDescription }) {
+  async _generateDiverseProactiveMessage({ character, state, activity, timeDescription, pendingPlans, latestDiary, emotionEvent }) {
     const name = character.nickname || character.name;
+
+    let sourceLine;
+    if (pendingPlans && pendingPlans.length > 0) {
+      sourceLine = `你们之前有个约定：「${pendingPlans[0].description}」。你现在正在${activity}。可以自然地提起这个约定或提醒对方。`;
+    } else if (emotionEvent) {
+      sourceLine = `今天发生了这件事：${emotionEvent.description}。你现在正在${activity}。你想跟对方说说这件事给你的感受。`;
+    } else if (latestDiary && latestDiary.content) {
+      sourceLine = `你最近写了篇日记，里面有这段话：「${String(latestDiary.content).slice(0, 120)}」。你现在正在${activity}。可以自然地分享日记里的心情，但绝不要说"我写了日记"或引用原文。`;
+    } else {
+      sourceLine = `你现在正在${activity}。`;
+    }
+
     const systemPrompt = `你是「${name}」，${character.base_personality}。
-现在是${timeDescription}，你正在${activity}。
+现在是${timeDescription}。${sourceLine}
 你们的好感度是 ${Math.round(state.affection)}/100。
 
-请生成一条简短的消息（1-2句话），像是你正在做这件事的时候突然想到了对方，想跟 ta 说点什么。
+请生成一条简短的消息（1-2句话），像是你突然想到了对方，想跟 ta 说点什么。
 语气要符合你的性格，要自然，不要太刻意。直接输出消息内容，不要加引号。`;
 
     try {
       return await this.llmProvider.chat(this.provider, {
         systemPrompt,
-        messages: [{ role: 'user', content: '你在做这件事的时候想到了对方，想说什么？' }],
+        messages: [{ role: 'user', content: '你想对 ta 说点什么？' }],
         temperature: 0.9,
       });
     } catch {
