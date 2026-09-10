@@ -61,8 +61,51 @@ export class MultimodalService {
   async synthesizeSpeech({ text, characterId, emotionState = 'calm', speaker }) {
     const voice = (speaker && speaker.trim()) || this._resolveSpeaker(characterId);
     const context_texts = this._buildContexts(characterId, emotionState);
+    const speedRatio = this._speedRatioFor(emotionState);
+
+    const buildBody = (ratio) => ({
+      req_params: {
+        text,
+        speaker: voice,
+        audio_params: {
+          format: 'mp3',
+          sample_rate: 24000,
+          ...(ratio !== null ? { speed_ratio: ratio } : {}),
+        },
+        ...(context_texts.length ? { context_texts } : {}),
+      },
+    });
 
     const t0 = Date.now();
+    let buffer;
+    try {
+      buffer = await this._requestAudio(buildBody(speedRatio));
+    } catch (err) {
+      // speed_ratio 不被资源支持时降级为不带语速重试一次（仅首次带语速的请求）
+      if (speedRatio !== null) {
+        console.warn(`[MultimodalService] 带语速(${speedRatio})请求失败，降级重试: ${err.message}`);
+        buffer = await this._requestAudio(buildBody(null));
+      } else {
+        throw err;
+      }
+    }
+    console.log(`[MultimodalService] TTS 完成: voice=${voice}, emotion=${emotionState}${speedRatio !== null ? `, speed=${speedRatio}` : ''}, ${text.length}字, ${Date.now() - t0}ms, ${buffer.length}B`);
+    return buffer;
+  }
+
+  /** 情绪 → 语速倍率（不支持对应状态时返回 null，不传 speed_ratio） */
+  _speedRatioFor(emotionState) {
+    switch (emotionState) {
+      case 'angry': return 1.15;
+      case 'joyful':
+      case 'happy': return 1.05;
+      case 'uneasy': return 0.95;
+      default: return null;
+    }
+  }
+
+  /** 发起 TTS 请求并收集音频（body 由调用方组装） */
+  async _requestAudio(body) {
     const response = await fetch(TTS_ENDPOINT, {
       method: 'POST',
       headers: {
@@ -72,24 +115,14 @@ export class MultimodalService {
         'Content-Type': 'application/json',
         'Connection': 'keep-alive',
       },
-      body: JSON.stringify({
-        req_params: {
-          text,
-          speaker: voice,
-          audio_params: { format: 'mp3', sample_rate: 24000 },
-          ...(context_texts.length ? { context_texts } : {}),
-        },
-      }),
+      body: JSON.stringify(body),
     });
 
     if (!response.ok) {
       const errText = await response.text();
       throw new Error(this._explainError(response.status, errText));
     }
-
-    const buffer = await this._collectAudio(response);
-    console.log(`[MultimodalService] TTS 完成: voice=${voice}, emotion=${emotionState}, ${text.length}字, ${Date.now() - t0}ms, ${buffer.length}B`);
-    return buffer;
+    return await this._collectAudio(response);
   }
 
   /** 读取 chunked 响应体，解析多段 JSON，拼接 base64 音频分片 */
