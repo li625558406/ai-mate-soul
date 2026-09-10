@@ -796,6 +796,11 @@ function playWithAvatar(url) {
 // 情绪广播入口（Task 9 的 socket 监听调用）
 function broadcastEmotion(state) { broadcastAvatar({ type: 'emotion', state }); }
 
+// 后端聊天结算后推送的情绪状态 → 转发给 Live2D 形象
+socket.on('avatar:emotion', (d) => {
+  if (d.characterId === currentCharacterId) broadcastEmotion(d.emotionState);
+});
+
 (async () => {
   await loadCharacters();
   refreshCfgStatus();
@@ -1134,6 +1139,9 @@ async function refreshState() {
       sb.textContent = moodLabels[s.emotionState] || '情绪波动';
       if (s.emotionState === 'cold_war') sb.textContent += ` (${s.coldWarRemaining}min)`;
     } else sb.style.display = 'none';
+
+    // 同步情绪到 Live2D 形象
+    broadcastEmotion(s.emotionState || 'calm');
 
     document.getElementById('coldWarHint').classList.toggle('show', s.coldWarRemaining > 0);
     updateBusyBar(s.busyActivity, s.busyRemaining, s.busyUntil);
