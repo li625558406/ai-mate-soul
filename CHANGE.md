@@ -507,3 +507,32 @@ UI 中"小林"角色全名显示为乱码：`lin_004.json` 的 `full_name` 已�
 
 ### 核心变更点（`src/core/ChatService.js` 正常管线）
 中性/正面消息（weight ≥ 0）结算后若 delta < 0，钳制为 0（好感持平）。负面消息（敷衍 -0.5、冒犯、吵醒打扰）不受影响，照常扣分。敷衍短消息路径 weight 本身 -0.5 属设计内负贡献，不钳制。
+
+## 2026-09-10 — 桌面端改造 + Live2D 实时视频语音形象（Electron 壳 + 形象联动）
+
+### 改动主题
+把现有 Web 应用包进 Electron 桌面壳（服务守护 + 托盘 + 形象小窗），并引入 Live2D 形象与语音/情绪实时联动：TTS 播放与实时通话驱动嘴型，聊天结算情绪驱动表情，失焦时主动消息走系统通知。网页模式 `npm start` 完全保留不受影响。
+
+### 核心变更点
+1. **Electron 桌面壳**（`src/desktop/`：主进程 / 服务守护 / 窗口 / 托盘）：spawn 系统 Node 子进程跑现有后端（零后端侵入），`npm run desktop` 启动；端口读 `.env`（`config.js`，dotenv）；托盘、开机自启、单实例锁、端口预占检测；主窗口加载 `http://127.0.0.1:<port>`
+2. **Live2D 形象**（`public/live2d/`）：PixiJS + pixi-live2d-display + Cubism Core（专有许可不入库，.gitignore）；示例模型 Haru（替代原计划的 Hiyori，官方链接不稳定；免费素材许可，模型目录 gitignore 不入库）；主窗口聊天页形象区 + 模型损坏时 catch 降级隐藏
+3. **嘴型联动**：聊天 TTS / 语音条（`playWithAvatar` + AnalyserNode RMS）与实时通话下行链路统一采集振幅，经 `BroadcastChannel('avatar')` 同步主窗与小窗；`ampOwner` 归属校验防跨音频误关嘴型
+4. **情绪联动**（后端唯一改动）：`/api/chat` 结算后 emit `avatar:emotion`（含 userId 防多用户串扰），前端校验 characterId+userId 后映射 9 种情绪状态到 Live2D 参数
+5. **形象独立小窗**：透明置顶无边框窗，整窗可拖动（小窗牺牲视线追踪换取拖动，主窗视线正常）
+6. **系统通知**（public/index.html）：主动消息在 Electron 内且主窗失焦时走 HTML5 Notification（自动转系统通知）；权限仅在 Electron 内一次性请求，网页模式不打扰
+7. **断线重连修复**：socket `connect` 时补发 `register`（后端子进程重启后服务端注册丢失，主动消息不再静默丢）
+8. **桌面端断线遮罩**：后端子进程崩溃/重启时全屏遮罩提示，重连成功自动消失
+
+### 迭代期发现的库级缺陷与规避（评审确认）
+- pixi-live2d-display 嘴型/情绪参数必须挂在 `PIXI.Ticker.shared`（`app.ticker` 跨 ticker 优先级无效，参数会被动作同帧冲掉）
+- pixi 7 无 InteractionManager，视线追踪改 `window mousemove` + `model.focus`
+- `autoDensity` 会冻结 canvas 内联样式，CSS 覆盖需 `!important`
+- AudioContext 需在用户手势栈内预热（Safari 静音风险）
+- 振幅循环需 `ampOwner` 归属校验，防止前一段音频的 `onended` 误关新音频的嘴型
+
+### 遗留事项
+- electron-builder 打包、通话实时情绪分析、模型替换 UI、小窗尺寸记忆、开始菜单快捷方式
+- 对抗性用例中托盘行为/开机自启/二次启动单实例锁/端口预占对话框/子进程崩溃重启需用户在桌面模式下手动验证
+
+### 验证
+网页模式回归：页面 0 新增报错（仅预存在 favicon 404）、Live2D 形象正常挂载渲染、聊天 UI 与角色列表完整；对抗性用例（畸形振幅 -5/1e9/'x'/NaN/null、非法情绪 `<script>`/`constructor`/`__proto__`/缺字段、`applyAmplitude` 直连畸形值、通知守卫 permission='default' 求值）全部通过——振幅钳制 [0,1]、`Object.hasOwn` 防原型污染、无异常无崩溃；模型损坏降级路径经代码审查确认（catch → 销毁 app → 隐藏容器）。

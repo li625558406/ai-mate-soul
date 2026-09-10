@@ -18,13 +18,18 @@ npm start            # 生产模式
 - 启动后访问 `http://localhost:3000`；HTTPS `https://localhost:3443`（自签证书自动生成，手机麦克风权限需要 HTTPS）。
 - 对话/绘图/TTS/视频的 API 配置通过 **Web 设置页**（`public/index.html` 设置弹窗 → `PUT /api/settings`）管理，持久化在 `data/settings.json`（唯一配置源，与 `.env` 无关，启动不做 env 校验，未配置仅告警不退出）。
 - `.env` 仅 `PORT` / `HTTPS_PORT` 仍生效。
-- 项目迭代记录见 [CHANGE.md](./CHANGE.md)（按日期追加需求与整改条目）（当前迭代：忙碌系统改造的对抗性测试——43 项断言全过，修复 jitter 翻正、活动名绕过、prompt 注入、落地未清洗 4 处缺陷；前置：忙碌系统人性化改造与角色背景视频功能，详见 CHANGE.md 2026-09-10 条目）。
+- 项目迭代记录见 [CHANGE.md](./CHANGE.md)（按日期追加需求与整改条目）（当前迭代：桌面端改造 + Live2D 实时视频语音形象——`npm run desktop` 桌面模式 / `npm start` 网页模式；`src/desktop/` Electron 编排，`public/live2d/` 渲染层与嘴型/情绪联动；详见 CHANGE.md 2026-09-10 条目）。
 
 ## 架构
 
 ### 依赖注入单一入口（src/index.js）
 
 所有服务在 `src/index.js` 顶层手动实例化并通过构造函数互相注入（无 DI 框架、无全局单例导出）。改服务构造参数时必须同步修改这里的组装代码。注意部分依赖是事后挂载的（如 `proactiveService.imageService = imageService`），存在隐式初始化顺序。
+
+### 桌面壳与形象渲染（src/desktop/ + public/live2d/）
+
+- `src/desktop/` — Electron 主进程：spawn 系统 Node 子进程运行现有后端（服务守护/崩溃重启）、主窗/透明置顶形象小窗、托盘、开机自启、单实例锁；`npm run desktop` 启动，后端代码零侵入
+- `public/live2d/` — Live2D 形象渲染层：PixiJS + pixi-live2d-display，主窗与小窗经 `BroadcastChannel('avatar')` 同步音频振幅（嘴型）与情绪状态；Cubism Core 与模型目录不入库（.gitignore）
 
 ### 聊天核心管线（src/core/ChatService.js）
 

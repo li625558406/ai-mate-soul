@@ -720,6 +720,11 @@ const XP_THRESHOLDS = [0, 100, 300, 600, 1000, 1500, 2200, 3000, 4000, 5500];
 // Socket.IO
 const socket = io();
 
+// 桌面端一次性请求系统通知权限（网页模式不打扰用户）
+if (/Electron/.test(navigator.userAgent) && window.Notification && Notification.permission === 'default') {
+  Notification.requestPermission();
+}
+
 // 桌面端后端子进程崩溃/重启时给出全屏遮罩，恢复后自动消失
 const connMask = document.getElementById('connMask');
 socket.on('disconnect', () => { connMask.style.display = 'flex'; });
@@ -813,6 +818,11 @@ socket.on('proactive', (data) => {
   const timeLabel = data.offline && data.sentAt ? ' · ' + String(data.sentAt).slice(11, 16) : '';
   appendMsg('proactive', data.message, data.characterName + ' (主动' + timeLabel + ')');
   refreshState();
+  // 桌面端：主窗口失焦时走系统通知（Electron 内 HTML5 Notification 自动转系统通知）
+  if (!document.hasFocus() && /Electron/.test(navigator.userAgent)
+      && window.Notification && Notification.permission === 'granted') {
+    try { new Notification(data.characterName || 'AI Mate', { body: data.message || '' }); } catch {}
+  }
 });
 
 socket.on('proactive_photo', (data) => {
