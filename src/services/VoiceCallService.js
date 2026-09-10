@@ -19,7 +19,7 @@ const VOLCANO_REALTIME_RESOURCE_ID = 'seeduplex_realtime_dialogue'; // 升级握
 const SEEDUPLEX_MODEL = '1.2.6.1';
 const PACER_INTERVAL_MS = 20;   // 协议要求的 20ms 转发节奏
 const PACER_CHUNK_BYTES = 640;  // 16k/int16 下 20ms 对应字节数
-const PACER_MAX_QUEUE = 48000;  // 队列积压上限（3 秒音频），超出丢最旧防延迟滚雪球
+const PACER_MAX_QUEUE = 48000;  // 队列积压上限（1.5 秒音频），超出丢最旧防延迟滚雪球
 
 // 角色音色：读角色档案 voice_preset，缺省回退默认音色（与 TTS 通道同一来源）
 function resolveSpeaker(characterManager, characterId) {
@@ -109,12 +109,18 @@ export class VoiceCallService {
       pacerBytes: 0,               // 队列总字节数
       pacerTimer: null,            // 节奏转发定时器
       endEmitted: false,           // voice_call:ended 是否已发（防重复）
+      ending: false,               // 已进入挂断流程（宽限窗口内拒绝后续音频/重复挂断）
       socket: null,                // Socket.IO socket 引用（外部设置）
     };
 
     this._calls.set(socketId, callState);
 
     ws.on('open', () => {
+      // 握手竞态守卫：open 晚于挂断/清理时，直接终止连接，不建会话不启定时器
+      if (this._calls.get(socketId) !== callState) {
+        ws.terminate();
+        return;
+      }
       console.log(`[VoiceCall] 火山 Seeduplex 连接已建立 (socketId: ${socketId}, 角色: ${character.full_name || character.nickname}, 音色: ${speaker})`);
       ws.send(JSON.stringify({
         type: 'session.create',
@@ -162,7 +168,9 @@ export class VoiceCallService {
   stopCall(socketId) {
     const call = this._calls.get(socketId);
     if (!call) return;
+    if (call.ending) return; // 已在挂断宽限窗口内，幂等返回
 
+    call.ending = true;
     this._stopPacer(call);
     // 先通知前端并标记结束（防止 _cleanupCall 重复发送）
     if (call.socket && !call.endEmitted) {
@@ -175,7 +183,7 @@ export class VoiceCallService {
     }
     // 最多等 2 秒让 session.closed 下行/关闭事件触发 _cleanupCall，超时强制断开
     setTimeout(() => {
-      try { if (call.ws && call.ws.readyState === WebSocket.OPEN) call.ws.close(1000, '用户挂断'); } catch { /* ok */ }
+      try { if (call.ws) call.ws.terminate(); } catch { /* ok */ }
       this._cleanupCall(socketId);
     }, 2000);
   }
@@ -203,6 +211,7 @@ export class VoiceCallService {
   sendAudio(socketId, base64Chunk) {
     const call = this._calls.get(socketId);
     if (!call || !call.ws || call.ws.readyState !== WebSocket.OPEN) return;
+    if (call.ending) return; // 挂断宽限窗口内，直接丢弃
     if (!call.sessionReady) return; // 会话建立前不转发
 
     if (call.aiSpeaking) {
@@ -217,7 +226,7 @@ export class VoiceCallService {
     if (!buf.length) return;
     call.pacerQueue.push(buf);
     call.pacerBytes += buf.length;
-    while (call.pacerBytes > PACER_MAX_QUEUE && call.pacerQueue.length > 1) {
+    while (call.pacerBytes > PACER_MAX_QUEUE && call.pacerQueue.length > 0) {
       call.pacerBytes -= call.pacerQueue.shift().length;
     }
   }
