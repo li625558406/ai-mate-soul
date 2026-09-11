@@ -536,3 +536,34 @@ UI 中"小林"角色全名显示为乱码：`lin_004.json` 的 `full_name` 已�
 
 ### 验证
 网页模式回归：页面 0 新增报错（仅预存在 favicon 404）、Live2D 形象正常挂载渲染、聊天 UI 与角色列表完整；对抗性用例（畸形振幅 -5/1e9/'x'/NaN/null、非法情绪 `<script>`/`constructor`/`__proto__`/缺字段、`applyAmplitude` 直连畸形值、通知守卫 permission='default' 求值）全部通过——振幅钳制 [0,1]、`Object.hasOwn` 防原型污染、无异常无崩溃；模型损坏降级路径经代码审查确认（catch → 销毁 app → 隐藏容器）。
+
+## 2026-09-11 — Live2D 多模型按角色配置（模型清单 API + 运行时切换 + 小窗握手联动）
+
+### 改动主题
+Live2D 形象从单一 Haru 升级为按角色配置多模型：目录即清单的模型 API、角色档案 `live2d_model` 字段、avatar.js 运行时安全切换（防并发乱序/纹理泄漏）、主窗/小窗经 `model-request` 握手与 `model` 广播联动跟随，角色编辑器提供形象下拉框。设计文档：`docs/superpowers/specs/2026-09-11-live2d-multi-model-design.md`；实施计划：`docs/superpowers/plans/2026-09-11-live2d-multi-model.md`。
+
+### 核心变更点
+1. **模型清单 API** `GET /api/live2d/models`：目录即清单——扫描 `public/live2d/models/` 下含 `*.model3.json` 的子目录，无配置文件；目录异常时返回空清单，前端回退默认
+2. **角色档案新增 `live2d_model` 字段**：`listCharacters` 白名单透传；编辑器 patch 保存零侵入
+3. **avatar.js 运行时模型切换 `loadModel`**：单调序号（loadSeq）防并发乱序覆盖（最后意图获胜）；作废请求只销毁子节点不碰共享缓存纹理；旧模型 `destroy({texture:true,...})` 释放 GPU 纹理防长驻泄漏；失败保留当前形象（不触发降级隐藏）
+4. **小窗握手**：小窗 mount 后广播 `model-request`，主窗应答当前模型（IS_OVERLAY 方向过滤防双窗互答）；主窗切角色广播 `model` 消息，小窗跟随切换
+5. **角色编辑器**：新增"Live2D 形象"下拉框（默认（Haru）/hiyori/natori），保存即生效
+6. **模型资产**：Hiyori + Natori（与 Haru 同为官方 CubismWebSamples 免费素材，gitignore 不入库；三个目录均通过引用完整性校验）
+
+### 对抗验证与端到端联动验证
+- 对抗用例：畸形/注入 url（非字符串/非站内路径/扩展名不符）拒绝；同 URL 并发加载不腐蚀共享纹理；A→B→A 快速切换竞态最后意图获胜；档案指向已删模型回退 haru；连续 6 次切换无叠加、纹理正常释放
+- 双页面模拟（Playwright，SW 屏蔽，BroadcastChannel 协议探针 + moc3 资源加载观测 + 小窗 canvas 截图像素比对）：
+  1. **后开小窗握手**：主窗切 hiyori 后打开 overlay.html → 小窗先 mount haru、`model-request` 得主窗应答 hiyori 并完成渲染（小窗资源含 hiyori moc3；与 haru 基线截图像素差 10.3%）
+  2. **切角色跟随**：主窗走 `applyCharacterModel('natori')` → 广播 `model`、小窗收到并加载 natori（截图与 hiyori 差 10.4%）
+  3. **零切换回退**：主窗就绪后新开小窗、全程无切换 → 握手应答 haru、小窗去重不重复加载，无崩溃
+  - 全程两页 0 console error（仅预存在 favicon 404）
+  - 已知边界（设计内）：小窗先于主窗挂载完成发出握手时，主窗 `currentUrl` 尚空不应答，小窗保持默认 haru，待下次 `model` 广播跟随
+
+### 遗留事项
+- 模型预览缩略图、按角色上传自定义模型、AI 生成分层立绘（独立课题）
+- 编辑器下拉 option 未 escapeHtml（本地威胁模型下不可达）
+- 模型清单拉取失败本次会话内不自愈（刷新即恢复）
+- 多主窗 tab 模型趋同（既有镜像语义）
+
+### 另注
+桌面端迭代（2026-09-10）的手动验证清单中托盘/开机自启/单实例锁等项仍待用户在桌面模式真机验证（承接上条遗留）。
