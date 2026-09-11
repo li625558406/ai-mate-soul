@@ -1,3 +1,25 @@
+## 2026-09-11 — 新增 Live2D 模型 character（PSD2Live 流水线从设定表生成）
+
+### 改动主题
+用 .scratch/psd2live 流水线把角色设定图转成 Live2D 模型并接入网页预览。初版走"Seedream 重绘分层"路线（AI 重绘各部件，质量不稳），最终版改为"能动才生成"：单张 12 格设定表直接切割原始像素部件，仅嘴部用 Seedream 生成，部件间天然风格一致。
+
+### 核心变更点
+1. **切割**（`work/tools/slice-sheet.cjs`）：12 格设定表按行列窗口 + INSET 防白边框线污染，5×5 邻域密度过滤细线/文字，眼白近白特判 + 连通域去噪 → 12 个部件 PNG
+2. **嘴部生成**（`gen-mouth.cjs` + `extract-mouth.cjs`）：Seedream `<bbox>` 局部编辑生成最大开嘴（唇+齿+舌），肤色键控提取，符合 PSD_LAYER_SPEC"闭嘴由 ParamMouthOpenY=0 压缩"契约
+3. **配准组装**（`assemble.cjs` + `build-psd2.cjs`）：全身图为风格参照非配准目标（部件间自洽、与全身图比例不一致 1.77×）；脸部锚定 + 衣物非等比缩放（sx≠sy），眼睛三件套按连通域逐元素放置；13 层 PSD（08 拆眉/睫两层）按 PSD_LAYER_SPEC 语义命名，K=3 → 960×2340 画布
+4. **导出部署**：PSD2Live CLI 出全量文件族 → `public/live2d/models/character/`（gitignore 不入库）；`/api/live2d/models` 已列出 id=character，可在角色档案 live2d_model 中选用
+5. **边缘清理**（`clean-edges.cjs`）：切割窗口边缘残留的表格边框线列/行自动清除（曾造成渲染时身体右侧 1px 灰色竖线伪影）
+6. **临时预览页**：public/live2d/preview-test.html（加载指定模型的独立预览页，验证用，可按需删除）
+
+### 验证
+Playwright 实测：模型渲染完整（蝴蝶结/发型/五官/露肩卫衣/长裤），眨眼、idle 摇摆正常，`applyAmplitude(1)` 嘴型正确张开（口腔/唇线符合契约）；清 SW 缓存后无伪影。
+
+### 遗留事项
+- 眉/睫 ArtMesh 默认姿态与 PSD 有 ~5px 网格收紧偏差（流水线警告，视觉无明显影响）
+- 头部放大特写分辨率受部件原尺寸限制，可后续用 Cubism Editor 修
+- PWA SW 缓存（soul-v9）更新模型文件后需清缓存才能看到新版
+
+
 # CHANGE.md — 项目迭代记录
 
 ## 2026-09-10 — 忙碌系统人性化改造：一心二用聊天 + 好感分档惩罚/回复速度
@@ -567,3 +589,24 @@ Live2D 形象从单一 Haru 升级为按角色配置多模型：目录即清单�
 
 ### 另注
 桌面端迭代（2026-09-10）的手动验证清单中托盘/开机自启/单实例锁等项仍待用户在桌面模式真机验证（承接上条遗留）。
+
+## 2026-09-11 — Live2D character 模型 v2 重制（等比组装修复拉伸/错位/直线裁切）
+
+### 改动主题
+针对 v1 四点反馈（衣服遮不住 body、衣裤直线裁切、整体拉长、裁切方式）重制 character 模型：Seedream img2img 重出"完整不裁切"12 格设定表，真网格矩形切割，全部件等比（sx=sy）组装 + 解剖锚点摆放。工具链在 `.scratch/psd2live/work/tools/`。
+
+### 核心变更点
+1. **重生成设定表**：Seedream img2img 输出 12 部件完整不裁切版本，部件间比例自洽
+2. **真网格切割**（`slice-sheet2.cjs`）：实测网格线非均匀（x≈28/324/620/917/1214/1510，行高 1120/478/653），按行带内缩 3px 白色泛洪 + 形态学开运算断网格线 + 连通域过滤 → 12 部件干净矩形 PNG（含此前被误滤的眼白）
+3. **等比组装**（`build-psd3.cjs`）：放弃模板匹配（Seedream 重绘部件致 RGB-SSD/NCC 失效），改剪影测量 + 解剖锚点链（头顶 y4/下巴 y172 推脸比例 0.656，眼距 50px 推眼部四层缩放）；每部件独立 sx=sy 消除拉伸
+4. **嘴部生成**（`gen-mouth.cjs`）：Seedream bbox 局部编辑 + 透明背景直接出最大开嘴，内容 bbox 裁切缩放贴回脸部坐标；修复 sharp 管线 composite 晚于 resize 执行导致的预览错位
+5. **导出部署**：13 层 PSD（新增 mouth 层，位于睫毛与前发之间）→ PSD2Live CLI → `public/live2d/models/character/`（gitignore 不入库）
+
+### 验证
+组装预览目检：衣服遮住 body、蝴蝶结右上、眼从刘海缝可见、嘴位置正确、无拉伸。Playwright + moc3 顶点级验证：模型加载渲染正常；`ParamMouthOpenY` 0→1 嘴部网格高度 0.006→0.053（9 倍） rig 绑定有效；眨眼 idle 动作含 ParamEyeLOpen/ROpen 轨道正常。注意：直接 setParameterValueById 会被 pixi-live2d-display 参数快照恢复覆写，须在模型 update 后同帧写入（avatar.js tick 已是正确时序）。
+
+### 遗留事项
+- 角色档案未配置 live2d_model，页面默认回退 haru，需在角色编辑器选"character"才会展示本模型
+- moc3 中性姿态与 PSD 有非致命偏差警告（流水线 RigIntegrityValidator 非闸门级，视觉无影响）
+- PSD2Live headless 截图验证受限（无 GPU 合成器空白），渲染验证走 readPixels 顶点级替代
+   - 追补（同日）：v2 首次部署后模型渲染成雪花噪声。根因是 `build-psd3.cjs` 写 PSD 时把 **PNG 压缩字节**直接塞进 ag-psd 的 `imageData.data`（该字段要求原始 RGBA 像素），导致图集纹理就是乱码；v1 的 build-psd2 是先 `.raw().toBuffer()` 再写入所以没踩坑。已修复为写入前重采样转 raw RGBA，重导出后经离屏渲染 PNG 目检通过。另将 SW 缓存版本 soul-v9 → **soul-v10**，强制所有客户端丢弃缓存的旧模型/旧纹理（静态资源是 cache-first，不 bump 的话旧雪花纹理会一直留在用户浏览器里）。

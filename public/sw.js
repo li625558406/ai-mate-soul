@@ -1,4 +1,4 @@
-const CACHE_NAME = 'soul-v9';
+const CACHE_NAME = 'soul-v10';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
