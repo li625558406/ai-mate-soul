@@ -46,14 +46,14 @@
     // 对抗：畸形 url（非字符串/扩展名不符/协议注入——只接受站内绝对路径）
     if (typeof url !== 'string' || !url.startsWith('/') || !url.endsWith('.model3.json')) return false;
     if (!ready) { pendingUrl = url; return false; }   // 未 mount（小窗时序）：暂存，mount 后加载
-    if (url === currentUrl) return true;              // 去重：同 url 不重复重载
+    if (url === currentUrl) { loadSeq++; return true; }   // 去重也取号：作废所有在途旧请求，保证最后意图获胜
     const PIXI = window.PIXI;
     if (!PIXI || !PIXI.live2d || !app) return false;
     const seq = ++loadSeq;                            // 取号：后续只有最新取号者才允许提交
     try {
       const next = await PIXI.live2d.Live2DModel.from(url);
       if (seq !== loadSeq) {   // 已有更新的切换请求在途/完成：本次作废，销毁刚加载的模型防纹理泄漏
-        try { next.destroy({ texture: true, baseTexture: true, children: true }); } catch {}
+        try { next.destroy({ children: true }); } catch {}   // 作废请求只摘子节点：纹理走全局缓存共享，不可销毁（会腐蚀同 url 的后提交模型）
         return false;
       }
       app.stage.addChild(next);            // 先上屏，成功后再切模块引用
