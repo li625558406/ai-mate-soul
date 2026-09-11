@@ -62,7 +62,8 @@ GET /api/live2d/models（新增）
 | 模型目录缺失/为空 | API 返回 `[]`，下拉框空，形象走现有降级链（无 Core/模型时隐藏形象区） |
 | 角色档案 live2d_model 值无效（模型已删） | 清单中查不到 → 回退默认 haru；haru 也没有 → 形象区现有降级链 |
 | loadModel 加载失败（文件损坏） | 保留旧模型 + console.warn，聊天不受影响 |
-| 小窗收到 model 消息时尚未 mount | avatar.js 消费端已有 ready 守卫语义，忽略即可（mount 后 refreshState 会再广播情绪；模型由小窗 mount 时按自身逻辑加载默认/主窗后续广播） |
+| 小窗收到 model 消息时尚未 mount | loadModel 内部有就绪守卫，未 mount 时记为 pendingUrl，mount 完成后立即加载 |
+| 小窗晚于主窗打开（错过历史 model 广播） | 握手：avatar.js mount 完成后广播 `{type:'model-request'}`；另一窗口的 avatar.js 收到后回发自己当前模型 url（BroadcastChannel 不回显给发送方，主窗响应即可收敛，无循环） |
 
 ## 6. 验证清单
 
