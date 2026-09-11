@@ -117,6 +117,7 @@ export class CharacterManager {
       hobbies: c.hobbies || [],
       personality: c.base_personality || '',
       voice_preset: c.voice_preset || '',
+      live2d_model: c.live2d_model || '',
       dynamicKnowledgeCount: this._countDynamicKnowledge(c),
     }));
   }

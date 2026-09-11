@@ -190,6 +190,24 @@ const avatarUpload = multer({ storage: multer.memoryStorage(), limits: { fileSiz
 
 // ==================== API Routes ====================
 
+// Live2D 可用模型清单：扫描 public/live2d/models/ 下含 *.model3.json 的子目录（目录即清单，无配置文件）
+app.get('/api/live2d/models', (_req, res) => {
+  try {
+    const dir = path.resolve(process.cwd(), 'public', 'live2d', 'models');
+    const models = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const sub = path.join(dir, entry.name);
+      const m3 = fs.readdirSync(sub).find(f => f.endsWith('.model3.json'));
+      if (m3) models.push({ id: entry.name, url: `/live2d/models/${entry.name}/${m3}` });
+    }
+    res.json({ models });
+  } catch (e) {
+    console.warn('[live2d] 模型清单扫描失败:', e.message);
+    res.json({ models: [] });   // 目录缺失/异常返回空清单，前端走默认模型降级
+  }
+});
+
 app.get('/api/characters', (_req, res) => {
   res.json({ characters: characterManager.listCharacters() });
 });
