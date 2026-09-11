@@ -2,6 +2,8 @@
   "name": "ai-mate-soul",
   "version": "0.1.0",
   "description": "AI伴侣后端 - 多模型情感引擎",
+  "license": "UNLICENSED",
+  "private": true,
   "main": "src/desktop/main.js",
   "type": "module",
   "scripts": {
