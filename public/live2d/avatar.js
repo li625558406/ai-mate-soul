@@ -4,8 +4,10 @@
 (() => {
   'use strict';
 
-  const MODEL_URL = '/live2d/models/haru/haru_greeter_t03.model3.json';
+  const DEFAULT_MODEL_URL = '/live2d/models/haru/haru_greeter_t03.model3.json';
   const CHANNEL = 'avatar';
+  // 小窗页面（overlay.html）：握手 model-request 时只有主窗应答，防止双窗互答干扰
+  const IS_OVERLAY = /\/live2d\/overlay\.html$/.test(location.pathname);
 
   // 情绪状态 → Cubism 参数（值域 -1..1 / 0..1，模型缺失某参数时 setParameterValueById 安全 no-op）
   const EMOTION_PARAMS = {
@@ -20,6 +22,7 @@
   };
 
   let app = null, model = null, ready = false, canvas = null;
+  let currentUrl = null, pendingUrl = null, channel = null;   // 当前模型 url / mount 前暂存 / 频道引用（握手回发用）
   let baseW = 0, baseH = 0;                          // 模型未缩放时的自然尺寸（fit 基准，防止重复缩放复利）
   let mouth = 0, mouthTarget = 0, lastAmpAt = 0;     // 嘴型当前值/目标值/最近振幅时间
   let emotionParams = null, emotionUntil = 0;        // 情绪参数与失效时间
@@ -37,6 +40,30 @@
     model.y = h * 0.03;
   }
 
+  // 切换模型：成功后旧模型销毁、新模型应用当前情绪参数；失败保留当前形象（不触发降级隐藏）
+  async function loadModel(url) {
+    // 对抗：畸形 url（非字符串/扩展名不符/协议注入——只接受站内绝对路径）
+    if (typeof url !== 'string' || !url.startsWith('/') || !url.endsWith('.model3.json')) return false;
+    if (!ready) { pendingUrl = url; return false; }   // 未 mount（小窗时序）：暂存，mount 后加载
+    if (url === currentUrl) return true;              // 去重：同 url 不重复重载
+    const PIXI = window.PIXI;
+    if (!PIXI || !PIXI.live2d || !app) return false;
+    try {
+      const next = await PIXI.live2d.Live2DModel.from(url);
+      const old = model;
+      model = next;
+      baseW = next.width; baseH = next.height;
+      app.stage.addChild(next);            // 先加新再删旧，避免闪烁
+      if (old) { app.stage.removeChild(old); try { old.destroy(); } catch {} }
+      currentUrl = url;
+      fit();                               // 新模型自然尺寸变了，按固定基准重新布局
+      return true;
+    } catch (err) {
+      console.warn('[avatar] 模型切换失败，保留当前形象:', err.message);
+      return false;                        // model 未被改动的路径上旧形象原样保留
+    }
+  }
+
   // 每 tick 把嘴型/情绪参数覆写到模型（LOW 优先级保证在动作更新之后执行）
   function tick() {
     if (paused || !model) return;
@@ -49,6 +76,8 @@
     }
   }
 
+  function postToChannel(msg) { try { channel && channel.postMessage(msg); } catch {} }
+
   function handleMsg(msg) {
     if (!msg || typeof msg !== 'object') return;
     if (msg.type === 'amplitude' && typeof msg.v === 'number') {
@@ -59,6 +88,11 @@
       // 用 hasOwn 防原型链污染（对抗：msg.state='constructor'/'__proto__' 等取到 Object.prototype）
       emotionParams = Object.hasOwn(EMOTION_PARAMS, msg.state) ? EMOTION_PARAMS[msg.state] : null;
       emotionUntil = Date.now() + 10 * 60_000; // 情绪持续 10 分钟后回 idle
+    } else if (msg.type === 'model' && typeof msg.url === 'string') {
+      loadModel(msg.url);
+    } else if (msg.type === 'model-request') {
+      // 小窗 mount 后索取当前模型；只有主窗应答（IS_OVERLAY 方向过滤，防双窗互答干扰）
+      if (!IS_OVERLAY && currentUrl) postToChannel({ type: 'model', url: currentUrl });
     }
   }
 
@@ -85,8 +119,9 @@
       const h = canvasEl.clientHeight || 440;
       app = new PIXI.Application({ view: canvas, width: w, height: h, backgroundAlpha: 0, autoDensity: true, resolution: devicePixelRatio || 1 });
       // pixi 7.4.3 主 bundle 不含 InteractionManager，autoInteract 依赖的 plugins.interaction 不存在会静默失效，故不传
-      model = await PIXI.live2d.Live2DModel.from(MODEL_URL);
+      model = await PIXI.live2d.Live2DModel.from(DEFAULT_MODEL_URL);
       app.stage.addChild(model);
+      currentUrl = DEFAULT_MODEL_URL;   // 记录当前模型（后续握手回发/去重判断依赖）
       // 记录自然尺寸（此刻 scale=1），后续 fit 用固定基准，避免 ResizeObserver 反复缩放复利
       baseW = model.width;
       baseH = model.height;
@@ -102,11 +137,15 @@
       // 窗口级 mousemove 视线追踪（onMove 见模块级定义）
       window.addEventListener('mousemove', onMove);
       const ch = new BroadcastChannel(CHANNEL);
+      channel = ch;   // 存模块级引用：握手 model-request 回发用
       ch.onmessage = (e) => handleMsg(e.data);
       // 关键：必须与 pixi-live2d-display 的动作更新同一 ticker（Ticker.shared），
       // LOW 优先级保证在 motionManager.update 之后执行，否则参数会被动作同帧冲掉
       PIXI.Ticker.shared.add(tick, null, PIXI.UPDATE_PRIORITY.LOW);
       ready = true;
+      // mount 前暂存的模型（小窗时序）立即加载；否则广播握手向主窗索取当前模型
+      if (pendingUrl) { const u = pendingUrl; pendingUrl = null; loadModel(u); }
+      else postToChannel({ type: 'model-request' });
       return true;
     } catch (err) {
       console.warn('[avatar] 形象加载失败，降级为静态参考图:', err.message);
@@ -125,6 +164,7 @@
 
   window.Avatar = {
     mount,
+    loadModel,
     get ready() { return ready; },
     // 主窗口本页直用的振幅入口（Task 7 接线；与 BroadcastChannel 收到的消息同效）
     applyAmplitude(v) {
