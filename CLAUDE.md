@@ -18,7 +18,7 @@ npm start            # 生产模式
 - 启动后访问 `http://localhost:3000`；HTTPS `https://localhost:3443`（自签证书自动生成，手机麦克风权限需要 HTTPS）。
 - 对话/绘图/TTS/视频的 API 配置通过 **Web 设置页**（`public/index.html` 设置弹窗 → `PUT /api/settings`）管理，持久化在 `data/settings.json`（唯一配置源，与 `.env` 无关，启动不做 env 校验，未配置仅告警不退出）。
 - `.env` 仅 `PORT` / `HTTPS_PORT` 仍生效。
-- 项目迭代记录见 [CHANGE.md](./CHANGE.md)（按日期追加需求与整改条目）（当前迭代：集成 Live2D 官方女性示例模型 Mao（可选形象 haru/hiyori/mao）+ 设置弹窗新增聊天区形象显隐开关（localStorage `avatarBox`）；PSD2Live 自动生成路线已废弃；`npm run desktop` 桌面模式 / `npm start` 网页模式；详见 CHANGE.md 2026-09-11 条目）。
+- 项目迭代记录见 [CHANGE.md](./CHANGE.md)（按日期追加需求与整改条目）（当前迭代：修复语音通话嘈杂问题——前端 `nextPlayTime` 单调调度防两路音频叠加 + session.create 字段名 `rate` 改 `sample_rate`；此前含 Live2D 形象按角色配置（haru/hiyori/mao/character）、PSD2Live 路线已废弃；`npm run desktop` 桌面模式 / `npm start` 网页模式；详见 CHANGE.md 2026-09-11 条目）。
 
 ## 架构
 

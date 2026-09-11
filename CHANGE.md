@@ -1,3 +1,24 @@
+## 2026-09-11 — 修复：语音通话声音嘈杂杂乱听不清（两路音频重叠 + 协议字段名错误）
+
+### 改动主题
+用户反馈语音电话中 AI 声音"很嘈杂杂乱，听不清内容"。用探针直连火山上游取证 + Playwright 真实通话采集定位根因后修复。
+
+### 根因（证据链）
+1. **主因：前端两处 `nextPlayTime = 0` 重置导致两路语音叠加**。实测下行音频爆发式到达（4.42s 音频 0.16s 内到完，约 27 倍实时），WebAudio 队列中存在大量已排期的未来 chunk；`voice_call:user_transcript` 和 `voice_call:ai_transcript_delta`（首包）把 `nextPlayTime` 重置为 0，新 chunk 立即开播、与积压 chunk 重叠 → 两路清晰语音叠加 = 嘈杂杂音。官方 PcmStreamPlayer 从不重置调度时间
+2. **次因：session.create 音频格式字段名错误**。协议字段为 `sample_rate`，代码误写 `rate`，疑似导致上游 ASR 输入管道异常（聊天库中从无任何通话转写记录，佐证 ASR 从未成功）
+3. **附带：奇数字节 chunk 整块丢弃**。chunk 边界可能切在 int16 样本中间，原 `new Int16Array` 抛 RangeError 被 catch 整块丢弃，改为只丢尾部孤立字节
+
+### 核心变更点
+- `public/index.html`：`voice_call:audio` 改单调调度（`nextPlayTime` 只前进不回退，落后 currentTime 才拉回）；删除 user_transcript / ai_transcript_delta 两处 `nextPlayTime = 0`；奇数字节安全解码
+- `src/services/VoiceCallService.js`：session.create 的 input/output format `rate` → `sample_rate`，头注释同步
+
+### 验证
+探针取证：生产配置下下行 PCM 为干净 24kHz/int16/mono（无 OggS 魔数、rms 正常）；`node --check` + index.html 内联脚本 `new Function` 语法校验通过；3444 测试实例以新代码启动正常。
+
+### 遗留事项
+- 前端只做回声抑制（AI 说话时丢麦克风音频），无 AEC 硬件回声消除，外放场景可能仍有轻微回声，建议戴耳机
+- 上游不接受探针合成音频喂入（AudioServerNoAudioInputTooLongError）为测试环境限制，真实麦克风不受影响
+
 ## 2026-09-11 — 修复：秘密日记"生成今天"成功后列表不刷新
 
 ### 核心变更点

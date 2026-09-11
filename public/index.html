@@ -1717,16 +1717,19 @@ socket.on('voice_call:audio', (base64Chunk) => {
     const binaryStr = atob(base64Chunk);
     const bytes = new Uint8Array(binaryStr.length);
     for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
-    const int16 = new Int16Array(bytes.buffer);
-    const float32 = new Float32Array(int16.length);
-    for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768;
+    // chunk 边界可能出现奇数字节：只丢弃尾部孤立字节，不能整块丢弃
+    const sampleCount = bytes.length >> 1;
+    if (sampleCount === 0) return;
+    const int16 = new Int16Array(bytes.buffer, 0, sampleCount);
+    const float32 = new Float32Array(sampleCount);
+    for (let i = 0; i < sampleCount; i++) float32[i] = int16[i] / 32768;
 
     if (!playbackContext) {
       playbackContext = new AudioContext({ sampleRate: 24000 });
     }
     if (playbackContext.state === 'suspended') playbackContext.resume();
 
-    const buffer = playbackContext.createBuffer(1, float32.length, 24000);
+    const buffer = playbackContext.createBuffer(1, sampleCount, 24000);
     buffer.getChannelData(0).set(float32);
     const source = playbackContext.createBufferSource();
     source.buffer = buffer;
@@ -1739,10 +1742,12 @@ socket.on('voice_call:audio', (base64Chunk) => {
     }
     source.connect(playbackContext._analyser);
 
-    // 时间调度：确保每个 chunk 在前一个结束后才开始播放，避免重叠
+    // 单调调度：音频 chunk 按网络爆发式到达（远快于实时），必须严格顺序排队；
+    // 通话中任何时刻都禁止把 nextPlayTime 重置为 0，否则新 chunk 立即开播，
+    // 与积压中的已排期 chunk 重叠，造成两路语音叠加的嘈杂杂音（与官方实现一致）
     const currentTime = playbackContext.currentTime;
-    if (nextPlayTime < currentTime) {
-      nextPlayTime = currentTime;
+    if (nextPlayTime < currentTime + 0.01) {
+      nextPlayTime = currentTime + 0.01;
     }
     source.start(nextPlayTime);
     nextPlayTime += buffer.duration;
@@ -1754,14 +1759,13 @@ socket.on('voice_call:audio', (base64Chunk) => {
 
 socket.on('voice_call:user_transcript', (text) => {
   // 显示用户语音转文字（用户已说完）
-  nextPlayTime = 0; // 新一轮对话，重置音频播放时间
+  // 注意：不重置 nextPlayTime——积压中的已排期 chunk 仍要顺序播完，重置会重叠出杂音
   document.getElementById('callSubtitle').textContent = `你: ${text}`;
 });
 
 let _aiTranscriptBuf = '';
 socket.on('voice_call:ai_transcript_delta', (text) => {
-  // AI 正在说话的实时字幕（新回复开始时重置播放时间）
-  if (!_aiTranscriptBuf) nextPlayTime = 0;
+  // AI 正在说话的实时字幕
   _aiTranscriptBuf += text;
   document.getElementById('callSubtitle').textContent =
     `${document.getElementById('callName').textContent}: ${_aiTranscriptBuf}`;

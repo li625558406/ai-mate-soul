@@ -6,7 +6,7 @@
  *
  * 架构：浏览器 ←Socket.IO→ Node.js 后端 ←WebSocket→ 火山 openspeech
  * 协议要点（官方接入必读）：
- * - 纯 JSON 文本帧，session.model 固定 1.2.6.1
+ * - 纯 JSON 文本帧，session.model 固定 1.2.6.1，audio format 字段名为 sample_rate
  * - 输入 PCM 16k/int16 须按 20ms（640 字节）实时节奏转发，否则服务端报错
  * - 停止发送音频须发 input_audio_mute.commit，恢复发 input_audio_unmute.commit
  * - 挂断须先 session.close 并等确认，直接断开触发 ContextCanceled(55000001)
@@ -128,8 +128,8 @@ export class VoiceCallService {
           model: SEEDUPLEX_MODEL,
           instructions: systemPrompt,
           audio: {
-            input: { format: { type: 'pcm', rate: 16000 } },
-            output: { format: { type: 'pcm', rate: 24000 }, speed: 0, loudness: 0, voice: speaker },
+            input: { format: { type: 'pcm', sample_rate: 16000 } },
+            output: { format: { type: 'pcm', sample_rate: 24000 }, speed: 0, loudness: 0, voice: speaker },
           },
         },
         extension: { asr: {}, tts: {}, dialog: {} },
