@@ -11,7 +11,7 @@ const POLL_MAX_MS = 10 * 60 * 1000;
  * VideoService - 火山方舟（Ark）视频生成引擎
  *
  * 流程（异步任务制，视频生成耗时数分钟）：
- * 1. 创建任务 — POST /contents/generations/tasks（文本 prompt + 角色参考图首帧）
+ * 1. 创建任务 — POST /contents/generations/tasks（场景化 prompt + 角色参考图保外貌一致）
  * 2. 后台轮询 — GET /contents/generations/tasks/{id}（queued/running → succeeded/failed）
  * 3. 下载保存 — mp4 存入 public/videos/
  * 4. 记录数据库 — 复用 photos 表（type = 'video'）
@@ -19,13 +19,15 @@ const POLL_MAX_MS = 10 * 60 * 1000;
  * 状态查询走 GET /api/video/status/:taskId，前端轮询展示进度。
  */
 export class VideoService {
-  constructor({ apiKey, baseURL, model, maxDuration, db, characterManager }) {
+  constructor({ apiKey, baseURL, model, maxDuration, db, characterManager, llmProvider, provider }) {
     this._apiKey = apiKey || '';
     this._baseURL = baseURL || DEFAULT_BASE_URL;
     this._model = model || DEFAULT_MODEL;
     this._maxDuration = this._normalizeDuration(maxDuration);
     this._db = db;
     this._characterManager = characterManager;
+    this._llmProvider = llmProvider;
+    this._provider = provider;
 
     // 确保视频目录存在
     if (!fs.existsSync(VIDEOS_DIR)) {
@@ -75,8 +77,8 @@ export class VideoService {
     const character = this._characterManager.getCharacter(characterId);
     if (!character) throw new Error(`角色 ${characterId} 不存在`);
 
-    // prompt：外部指定优先，否则基于角色档案 + 视频镜头描述生成
-    const prompt = opts.prompt || this._buildDefaultPrompt(character);
+    // prompt：外部指定优先，否则结合最近对话上下文生成专属当下场景的镜头描述
+    const prompt = opts.prompt || await this._buildScenePrompt(userId, character);
     const caption = opts.caption || this._generateCaption(character);
 
     // 时长：配置值超出当前模型上限时按上限截断
@@ -84,7 +86,8 @@ export class VideoService {
     const duration = Math.min(this._maxDuration, cap);
     const truncated = this._maxDuration > cap;
 
-    // 首帧参考图：保证角色外貌一致性
+    // 角色参考图：多模态参考模式（reference_image），仅约束外貌一致性，
+    // 不作为首帧——首帧模式会让视频从静态照片"复活"，镜头不自然
     const content = [];
     const refImagePath = this._characterManager.getReferenceImagePath(characterId);
     if (refImagePath && fs.existsSync(refImagePath)) {
@@ -93,9 +96,9 @@ export class VideoService {
       const mime = ext === '.png' ? 'image/png' : 'image/jpeg';
       content.push({
         type: 'image_url',
-        image_url: { url: `data:${mime};base64,${base64}`, role: 'first_frame' },
+        image_url: { url: `data:${mime};base64,${base64}`, role: 'reference_image' },
       });
-      console.log(`[VideoService] 使用角色参考图作为首帧: ${path.basename(refImagePath)}`);
+      console.log(`[VideoService] 使用角色参考图（多模态参考）: ${path.basename(refImagePath)}`);
     }
     content.push({ type: 'text', text: `${prompt} --wm false --dur ${duration}` });
 
@@ -234,6 +237,51 @@ export class VideoService {
     const appearance = parts.join(', ') || character.full_name;
 
     return `Live-action selfie video, handheld camera, ${appearance}, the girl looks at the camera, smiles and waves, natural daily indoor lighting, gentle body movement, realistic skin texture, warm atmosphere, smooth motion`;
+  }
+
+  /**
+   * 场景化视频 prompt：解析最近对话上下文，生成贴合当下聊天场景的镜头描述。
+   * 无历史 / LLM 失败时回退默认 prompt（不阻塞视频生成）。
+   */
+  async _buildScenePrompt(userId, character) {
+    let history = [];
+    try {
+      history = this._db.getRecentChatHistory(userId, character.id, 10) || [];
+    } catch {
+      // 历史读取失败不影响生成
+    }
+    if (!history.length || !this._llmProvider) {
+      return this._buildDefaultPrompt(character);
+    }
+
+    const dialogue = history
+      .map(m => `${m.role === 'user' ? '用户' : character.nickname}: ${this._stripTags(m.content).slice(0, 200)}`)
+      .join('\n');
+
+    try {
+      const response = await this._llmProvider.chat(this._provider, {
+        systemPrompt: `你是一个视频镜头描述生成器。根据下面角色与用户的最近聊天内容，生成一段贴合当前对话场景的实拍自拍视频镜头描述（英文，一行，不超过 80 词）。\n要求：\n- 视频主角是该女生本人（外貌以参考图为准，不要详细描述外貌）\n- 场景、动作、表情、情绪要自然延续最近的对话内容（比如刚聊到做饭就拍厨房场景，用户难过就给安慰的镜头）\n- 生活化真实感：Live-action selfie video 风格，手持镜头，自然光\n- 只输出镜头描述本身，不要任何解释、引号或前缀`,
+        messages: [{ role: 'user', content: `角色：${character.full_name}（${character.personality || ''}）\n\n最近对话：\n${dialogue}` }],
+        temperature: 0.7,
+        maxTokens: 200,
+      });
+      const prompt = this._stripTags(response).replace(/^["'`]|["'`]$/g, '').trim();
+      if (!prompt) return this._buildDefaultPrompt(character);
+      console.log(`[VideoService] 场景化 prompt（基于最近 ${history.length} 条对话）: ${prompt.slice(0, 80)}...`);
+      return prompt;
+    } catch (err) {
+      console.warn(`[VideoService] 场景化 prompt 生成失败，回退默认: ${err.message}`);
+      return this._buildDefaultPrompt(character);
+    }
+  }
+
+  /** 清洗 LLM 输出中可能残留的思维链标签 */
+  _stripTags(text) {
+    return String(text || '')
+      .replace(/<thought>[\s\S]*?<\/thought>/gi, '')
+      .replace(/<reply>/gi, '')
+      .replace(/<\/reply>/gi, '')
+      .trim();
   }
 
   /** 随机视频配文（简体中文） */

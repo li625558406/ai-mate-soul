@@ -1,3 +1,16 @@
+## 2026-09-11 — 优化：视频参考图改为多模态参考 + 场景化 prompt（结合对话上下文）
+
+### 改动主题
+用户指出参考图不应作为视频首帧（原 `role: 'first_frame'` 会让视频从静态照片"复活"，镜头不自然），且视频应结合上下文、生成专属当下对话场景的内容。
+
+### 核心变更点
+1. `src/services/VideoService.js`：参考图 `role: 'first_frame'` → `role: 'reference_image'`（Seedance 多模态参考模式，仅约束角色外貌一致性，与首帧模式互斥）
+2. `src/services/VideoService.js`：新增 `_buildScenePrompt` —— 取最近 10 条对话历史，LLM 生成贴合当前聊天场景的英文镜头描述（场景/动作/情绪延续对话内容），无历史或 LLM 失败时回退默认模板；输出清洗 `<thought>/<reply>` 标签防泄漏
+3. `src/index.js`：VideoService 构造注入 `llmProvider` + `defaultProvider`
+
+### 验证
+用带真实聊天记录的用户（smoke_voice/lin_004）创建任务，prompt 变为场景化描述（"sits by a desk stacked with books, gently touching a succulent..."，源自该用户对话内容），约 2 分钟后 succeeded，mp4 正常落地。
+
 ## 2026-09-11 — 修复：视频生成"未知错误"（漏 await + Ark API 路径错误）
 
 ### 改动主题

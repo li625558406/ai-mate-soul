@@ -129,6 +129,8 @@ const videoService = new VideoService({
   maxDuration: settings.video.maxDuration,
   db,
   characterManager,
+  llmProvider,
+  provider: defaultProvider,
 });
 
 // ==================== Express + Socket.IO ====================
