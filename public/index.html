@@ -656,6 +656,9 @@ body.view-chat #homePane { display:none; }
         <div class="field"><label>生日（MM-DD）</label><input type="text" id="ceBirthday" placeholder="03-15" autocomplete="off"></div>
         <div class="field"><label>年龄</label><input type="number" id="ceAge" min="1" max="120"></div>
         <div class="field"><label>原型 archetype</label><input type="text" id="ceArchetype" placeholder="如：邻家 / 傲娇 / 御姐 / 萝莉" autocomplete="off"></div>
+        <div class="field"><label>Live2D 形象</label>
+          <select id="ceLive2dModel"></select>
+        </div>
       </div>
       <div class="field"><label>教育 / 职业</label><input type="text" id="ceEducation" autocomplete="off"></div>
 
@@ -801,6 +804,20 @@ function playWithAvatar(url) {
 // 情绪广播入口（Task 9 的 socket 监听调用）
 function broadcastEmotion(state) { broadcastAvatar({ type: 'emotion', state }); }
 
+// ===== Live2D 模型清单：目录即清单，切角色时按档案 live2d_model 应用 =====
+let live2dModels = [];
+async function initLive2dModels() {
+  try { const r = await fetch('/api/live2d/models'); const d = await r.json(); live2dModels = d.models || []; }
+  catch { live2dModels = []; }
+}
+function applyCharacterModel(modelId) {
+  const id = modelId || 'haru';
+  const m = live2dModels.find(x => x.id === id) || live2dModels.find(x => x.id === 'haru');
+  if (!m) return;   // 清单里连 haru 都没有：不动形象（现有降级链已处理无模型场景）
+  broadcastAvatar({ type: 'model', url: m.url });
+  window.Avatar && window.Avatar.loadModel && window.Avatar.loadModel(m.url);
+}
+
 // 后端聊天结算后推送的情绪状态 → 转发给 Live2D 形象（校验 userId，防止多用户情绪串扰）
 socket.on('avatar:emotion', (d) => {
   const uid = document.getElementById('userId').value;
@@ -808,6 +825,7 @@ socket.on('avatar:emotion', (d) => {
 });
 
 (async () => {
+  await initLive2dModels();   // 先取模型清单，初始自动选中角色时即可应用其 live2d_model
   await loadCharacters();
   refreshCfgStatus();
   document.getElementById('msgInput').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
@@ -925,6 +943,7 @@ function selectCharacter(c, el, opts = {}) {
   // Register with Socket.IO
   const uid = document.getElementById('userId').value;
   socket.emit('register', { userId: uid, characterId: c.id });
+  applyCharacterModel(c.live2d_model);   // 形象跟随角色档案（未配置回退默认 haru）
 
   refreshState();
   loadChatHistory(uid, c.id);
@@ -2251,6 +2270,11 @@ function fillCeForm(p) {
   document.getElementById('ceBackground').value = p.background || '';
   document.getElementById('ceSpeaking').value = p.speaking_style || '';
   populateCeVoiceSelect(p.voice_preset || '');
+  const ceL2d = document.getElementById('ceLive2dModel');
+  ceL2d.innerHTML = '<option value="">默认（Haru）</option>' +
+    live2dModels.map(m => `<option value="${m.id}">${m.id}</option>`).join('');
+  ceL2d.value = p.live2d_model || '';
+  if (ceL2d.value !== (p.live2d_model || '')) ceL2d.value = '';   // 档案指向的模型已不在清单：回默认
   document.getElementById('ceHobbies').value = (p.hobbies || []).join('\n');
   const mf = document.getElementById('ceMinefields');
   mf.innerHTML = '';
@@ -2271,6 +2295,7 @@ function gatherCeProfile() {
   p.background = document.getElementById('ceBackground').value.trim();
   p.speaking_style = document.getElementById('ceSpeaking').value.trim();
   p.voice_preset = resolveCeVoice();
+  p.live2d_model = document.getElementById('ceLive2dModel').value || '';
   p.hobbies = document.getElementById('ceHobbies').value.split('\n').map(s => s.trim()).filter(Boolean);
   p.minefields = [...document.querySelectorAll('#ceMinefields .ce-mine-row')].map(row => {
     const inputs = row.querySelectorAll('input');
