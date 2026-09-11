@@ -23,6 +23,7 @@
 
   let app = null, model = null, ready = false, canvas = null;
   let currentUrl = null, pendingUrl = null, channel = null;   // 当前模型 url / mount 前暂存 / 频道引用（握手回发用）
+  let loadSeq = 0;                                   // 模型切换单调序号：防并发加载乱序完成时旧请求覆盖新请求
   let baseW = 0, baseH = 0;                          // 模型未缩放时的自然尺寸（fit 基准，防止重复缩放复利）
   let mouth = 0, mouthTarget = 0, lastAmpAt = 0;     // 嘴型当前值/目标值/最近振幅时间
   let emotionParams = null, emotionUntil = 0;        // 情绪参数与失效时间
@@ -48,14 +49,19 @@
     if (url === currentUrl) return true;              // 去重：同 url 不重复重载
     const PIXI = window.PIXI;
     if (!PIXI || !PIXI.live2d || !app) return false;
+    const seq = ++loadSeq;                            // 取号：后续只有最新取号者才允许提交
     try {
       const next = await PIXI.live2d.Live2DModel.from(url);
+      if (seq !== loadSeq) {   // 已有更新的切换请求在途/完成：本次作废，销毁刚加载的模型防纹理泄漏
+        try { next.destroy({ texture: true, baseTexture: true, children: true }); } catch {}
+        return false;
+      }
+      app.stage.addChild(next);            // 先上屏，成功后再切模块引用
       const old = model;
       model = next;
       baseW = next.width; baseH = next.height;
-      app.stage.addChild(next);            // 先加新再删旧，避免闪烁
-      if (old) { app.stage.removeChild(old); try { old.destroy(); } catch {} }
-      currentUrl = url;
+      if (old) { app.stage.removeChild(old); try { old.destroy({ texture: true, baseTexture: true, children: true }); } catch {} }
+      currentUrl = url;                    // currentUrl 最后写：只有完整提交才记录成功
       fit();                               // 新模型自然尺寸变了，按固定基准重新布局
       return true;
     } catch (err) {
