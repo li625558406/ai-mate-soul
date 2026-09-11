@@ -1,0 +1,22 @@
+{
+  "chat": {
+    "baseURL": "https://ark.cn-beijing.volces.com/api/v3",
+    "apiKey": "你的对话模型 API Key",
+    "model": "doubao-seed-character-260628"
+  },
+  "image": {
+    "baseURL": "",
+    "apiKey": "你的绘图 API Key",
+    "model": "doubao-seedream-5-0-pro-260628"
+  },
+  "tts": {
+    "apiKey": "你的火山引擎 TTS API Key",
+    "resourceId": "seed-tts-2.0"
+  },
+  "video": {
+    "baseURL": "https://ark.cn-beijing.volces.com/api/v3",
+    "apiKey": "你的视频生成 API Key",
+    "model": "doubao-seedance-2-0-mini-260615",
+    "maxDuration": 5
+  }
+}

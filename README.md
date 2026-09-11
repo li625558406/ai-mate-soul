@@ -2,7 +2,19 @@
 
 > 多模型情感引擎驱动的沉浸式 AI 伴侣系统
 
-AI Mate Soul 是一个高度可定制的 AI 伴侣后端，通过情感引擎、记忆系统、日程模拟、语音通话和图片生成等多维度能力，打造具备真实性格与成长轨迹的虚拟角色。
+AI Mate Soul 是一个高度可定制的 AI 伴侣系统：情感引擎、记忆系统、日程生活模拟、Live2D 形象、实时语音通话、AI 绘图 / 拍视频等多维度能力，打造具备真实性格与成长轨迹的虚拟角色。既可作为网页应用使用，也可通过 Electron 以桌面模式运行（透明形象小窗 + 托盘 + 开机自启）。
+
+## 界面预览
+
+| 主聊天界面 | API 配置 |
+|------------|----------|
+| ![主聊天界面](docs/screenshots/01-main-chat.png) | ![API 配置](docs/screenshots/02-settings.png) |
+
+| 角色管理 | 语音通话 |
+|----------|----------|
+| ![角色管理](docs/screenshots/03-character-manager.png) | ![语音通话](docs/screenshots/05-voice-call.png) |
+
+主界面右下角为 Live2D 形象，随语音口型与情绪实时变化。
 
 ## 核心特性
 
@@ -29,32 +41,43 @@ AI Mate Soul 是一个高度可定制的 AI 伴侣后端，通过情感引擎、
 - **用户画像** — LLM 自动提取用户信息（姓名、喜好、工作等），持久化存储并随对话更新
 - **内心独白** — AI 回复前先进行内心思考（`<thought>` + `<reply>` 分离），独白单独存储可回顾
 
+### Live2D 形象
+- **形象渲染** — PixiJS + pixi-live2d-display，聊天区右下角展示，随语音口型与情绪实时变化
+- **多模型配置** — 模型目录即清单（`GET /api/live2d/models`），每个角色可独立配置 Live2D 模型
+- **多端同步** — 主窗与桌面小窗经 `BroadcastChannel` 同步嘴型与情绪状态
+
 ### 多模态
-- **语音通话** — 基于阿里云 DashScope Qwen-Omni-Realtime，WebSocket 实时 ASR + LLM + TTS，支持回声抑制
-- **语音合成** — DashScope Qwen3-TTS-Instruct-Flash，每角色独立音色，情绪状态驱动语调变化
-- **AI 绘图** — DashScope Wanx 2.7 Image Pro，支持自拍/空镜/拼图/她拍，模板 + LLM 动态生成 prompt，支持角色参考图保持外貌一致性
+- **语音通话** — 火山豆包 Seeduplex 实时语音 WebSocket，全双工对话，音色按角色配置
+- **语音合成** — 火山豆包 seed-tts-2.0 单向流式 TTS，每角色独立音色，情绪状态驱动语调变化
+- **AI 绘图** — 支持火山方舟（doubao-seedream）与阿里云 DashScope（Wanx），自拍/空镜/拼图/她拍，模板 + LLM 动态生成 prompt，角色参考图保持外貌一致性
+- **AI 短视频** — 火山方舟 Seedance 异步任务制，角色"自拍"短视频，聊天气泡内直接播放
 
 ### 主动交互
-- **回归消息** — 用户离线 >12 小时且好感度 >60 时，重连推送角色回归消息
+- **回归消息** — 用户长时间离线且好感度达标时，重连推送角色回归消息
 - **定时推送** — 每 30 分钟检查在线空闲用户，基于当前活动推送主动消息
-- **主动发图** — 好感度 >80 时有概率主动发送自拍/空镜照片
+- **主动发图** — 好感度较高时有概率主动发送自拍/空镜照片
 
 ### 其他功能
 - **秘密日记** — 每天凌晨根据聊天记录自动生成日记，好感度达到阈值才可解锁
-- **数据备份** — AES-256-GCM 加密导出为 `.soul` 文件，支持导入恢复
 - **纪念日系统** — 自动记录首次相遇/生日等纪念日，推送提醒
+- **数据备份** — AES-256-GCM 加密导出为 `.soul` 文件，支持导入恢复
+- **角色管理** — Web 端可视化管理：编辑/换头像/新增复制/重置运行时状态/彻底删除
 - **PWA 支持** — 前端可安装为移动应用
+- **桌面模式** — Electron 壳：透明置顶形象小窗、托盘、开机自启、后端守护
 - **HTTPS 自签证书** — 自动生成，支持手机麦克风权限
 
 ## 技术栈
 
 | 层级 | 技术 |
 |------|------|
-| 后端 | Node.js + Express + Socket.IO |
+| 后端 | Node.js (ESM) + Express + Socket.IO |
 | 数据库 | SQLite (better-sqlite3) + Orama 全文搜索 |
-| 对话 | OpenAI 兼容 API（支持任意 LLM 提供商） |
-| 语音 | 阿里云 DashScope Qwen3-TTS / Qwen-Omni-Realtime |
-| 绘图 | 阿里云 DashScope Wanx 2.7 Image Pro |
+| 对话 | OpenAI 兼容 API（火山方舟 / DeepSeek 等任意兼容提供商） |
+| 语音 | 火山豆包 seed-tts-2.0（TTS）/ Seeduplex（实时语音通话） |
+| 绘图 | 火山方舟 doubao-seedream / 阿里云 DashScope Wanx |
+| 视频 | 火山方舟 Seedance |
+| 形象 | PixiJS + pixi-live2d-display（Cubism） |
+| 桌面 | Electron |
 | 天气 | wttr.in（免费无需 API Key） |
 | 前端 | 原生 HTML/CSS/JS + PWA |
 
@@ -63,14 +86,15 @@ AI Mate Soul 是一个高度可定制的 AI 伴侣后端，通过情感引擎、
 ```
 ai-mate-soul/
 ├── src/
-│   ├── index.js                    # 入口：Express/Socket.IO/定时任务
+│   ├── index.js                    # 入口：服务组装（依赖注入）、Express/Socket.IO/定时任务
 │   ├── core/
-│   │   ├── ChatService.js          # 聊天核心编排（完整管线）
+│   │   ├── ChatService.js          # 聊天核心编排管线（chatStream）
 │   │   ├── CharacterManager.js     # 角色档案加载与管理（热加载）
 │   │   └── DynamicPromptBuilder.js # 动态 System Prompt 拼接器
 │   ├── database/
 │   │   └── DatabaseManager.js      # SQLite 数据库管理 + 迁移
-│   └── services/
+│   ├── desktop/                    # Electron 桌面壳（主进程、形象小窗、托盘）
+│   └── services/                   # 领域服务（每个文件一个独立能力）
 │       ├── EmotionEngine.js        # 情感分析引擎
 │       ├── EmotionStateMachine.js  # 情绪状态机
 │       ├── GrowthService.js        # XP/等级/性格进化/镜像学习
@@ -81,29 +105,30 @@ ai-mate-soul/
 │       ├── PlanExtractor.js        # 对话中的约定提取
 │       ├── EnvironmentService.js   # 天气/节假日环境感知
 │       ├── ProactiveService.js     # 主动交互引擎
-│       ├── MultimodalService.js    # TTS 语音合成
-│       ├── VoiceCallService.js     # 实时语音通话
+│       ├── MultimodalService.js    # TTS 语音合成（火山豆包）
+│       ├── VoiceCallService.js     # 实时语音通话（Seeduplex）
+│       ├── VoiceCatalog.js         # 精选音色清单唯一源
 │       ├── ImageService.js         # AI 绘图引擎
+│       ├── VideoService.js         # AI 短视频生成（Seedance 异步任务）
 │       ├── DiaryService.js         # 秘密日记系统
 │       ├── LifecycleService.js     # 生命周期/纪念日
 │       ├── SecurityService.js      # AES 加密与备份导出
 │       ├── SettingsManager.js      # 运行时配置管理
 │       └── LLMProvider.js          # 多 LLM 提供商管理
-├── data/
-│   ├── ai_mate.db                  # SQLite 主数据库
-│   ├── characters/                 # 角色档案（JSON + 参考图）
-│   │   ├── reina_001/              # 沈熙桐（傲娇美术生）
-│   │   ├── miku_002/               # 林悠然（元气少女）
-│   │   ├── yuki_003/               # 顾雪晴（知性御姐）
-│   │   └── lin_004/                # 林语柔（温柔邻家姐姐）
-│   ├── memory/                     # Orama 长期记忆文件
-│   └── photo_templates.json        # 绘图模板库
 ├── public/
 │   ├── index.html                  # 前端界面（PWA）
+│   ├── styles/                     # 样式
+│   ├── live2d/                     # Live2D 渲染层（Cubism Core 与模型不入库）
+│   ├── icons/                      # PWA 图标
 │   ├── sw.js                       # Service Worker
-│   ├── manifest.json               # PWA 清单
-│   └── photos/                     # 生成的角色照片
-├── .env                            # 环境变量配置
+│   └── manifest.json               # PWA 清单
+├── data/                           # 运行时数据（gitignore，不入库）
+│   ├── settings.json               # API 配置（Web 设置页持久化）
+│   ├── characters/                 # 角色档案（JSON + 参考图）
+│   ├── memory/                     # Orama 长期记忆文件
+│   └── photo_templates.json        # 绘图模板库
+├── docs/screenshots/               # README 界面截图
+├── settings.example.json           # 配置模板（脱敏）
 └── package.json
 ```
 
@@ -111,7 +136,7 @@ ai-mate-soul/
 
 ### 环境要求
 
-- Node.js >= 18
+- Node.js >= 18（`better-sqlite3` 为原生模块，换 Node 大版本后需重新 `npm install`）
 - npm
 
 ### 安装
@@ -122,7 +147,7 @@ npm install
 
 ### 配置
 
-模型 API 全部通过 **Web 界面的设置页面**配置（对话 / 绘图 / TTS），持久化在 `data/settings.json`，保存即时生效，无需重启。
+所有模型 API（对话 / 绘图 / TTS / 视频）通过 **Web 设置页**配置：页面底部「⚙ 设置」弹窗填写，保存即时生效、无需重启，持久化在 `data/settings.json`。字段结构参见根目录的 [`settings.example.json`](settings.example.json)（脱敏模板）。
 
 - `.env` 仅需配置服务端口：`PORT`（默认 3000）、`HTTPS_PORT`（默认 3443）
 - 对话 API 未配置时服务仍可启动，页面会提示"去配置"
@@ -135,26 +160,38 @@ npm run dev
 
 # 生产模式
 npm start
+
+# 桌面模式（Electron，自动拉起后端）
+npm run desktop
 ```
 
 启动后访问：
 - HTTP: `http://localhost:3000`
-- HTTPS: `https://localhost:3443`（手机访问需要 HTTPS 才能使用麦克风）
+- HTTPS: `https://localhost:3443`（手机使用语音/麦克风需要 HTTPS）
 
-### 预设角色
+### Live2D 模型（可选）
+
+Live2D Cubism Core 与模型资产因许可要求不入库，需自行放置：
+
+- `public/live2d/live2dcubismcore.min.js` — Cubism Core 运行时
+- `public/live2d/models/<模型名>/` — 模型目录
+
+放置后通过 `GET /api/live2d/models` 确认识别，在角色档案的 `live2d_model` 字段中为每个角色指定模型。
+
+## 预设角色
 
 项目内置 4 个精心设计的角色，每个角色拥有完整的背景故事、性格设定、生活信息和外貌描述：
 
-| 角色 | 昵称 | 原型 | 身份 |
+| 角色 | 昵称 | 年龄 | 原型 |
 |------|------|------|------|
-| 沈熙桐 | 桐桐 | 傲娇 | 中国美术学院大二学生 |
-| 林悠然 | 悠然 | 元气 | 活泼可爱的少女 |
-| 顾雪晴 | 雪晴 | 御姐 | 成熟知性的大姐姐 |
-| 林语柔 | 语柔 | 邻家 | 温柔体贴的邻家姐姐 |
+| 林语柔 | 小林 | 22 岁 | 温柔邻家 |
+| 林悠然 | 小悠 | 18 岁 | 元气少女 |
+| 沈熙桐 | 桐桐 | 20 岁 | 傲娇 |
+| 顾雪晴 | 雪晴 | 26 岁 | 知性御姐 |
 
 ## 自定义角色
 
-在 `data/characters/` 下创建新目录，包含角色 JSON 和参考图：
+推荐直接在 Web 界面「👥 切换角色 → 角色管理」中新建/编辑角色，也可在 `data/characters/` 下手动创建目录，包含角色 JSON 和参考图：
 
 ```json
 {
@@ -183,7 +220,9 @@ npm start
     "school": "学校",
     "frequent_places": ["常去的地方"],
     "weekend_routine": "周末日常"
-  }
+  },
+  "voice_preset": "火山豆包音色 ID",
+  "live2d_model": "public/live2d/models 下的模型名"
 }
 ```
 
@@ -195,15 +234,26 @@ npm start
 |------|------|------|
 | POST | `/api/chat` | 聊天（SSE 流式响应） |
 | GET | `/api/state/:userId/:characterId` | 获取角色状态 |
+| GET/PUT | `/api/settings` | 配置管理 |
+| POST | `/api/settings/test` | API 配置校验 |
+| GET | `/api/characters` | 角色列表 |
+| POST | `/api/characters` | 新建角色 |
+| PUT | `/api/characters/:characterId` | 编辑角色 |
+| POST | `/api/characters/reload` | 角色档案热加载 |
+| POST | `/api/characters/:characterId/reset` | 重置角色运行时状态 |
+| DELETE | `/api/characters/:characterId` | 彻底删除角色 |
+| GET | `/api/live2d/models` | Live2D 模型清单 |
 | POST | `/api/tts` | 语音合成 |
+| GET | `/api/voices` | 精选音色清单 |
 | POST | `/api/photo` | AI 生成照片 |
+| POST | `/api/video` | 创建 AI 短视频任务 |
+| GET | `/api/video/status/:taskId` | 查询视频任务状态 |
 | GET | `/api/chat-history/:userId/:characterId` | 聊天记录 |
 | GET | `/api/diaries/:userId/:characterId` | 日记列表 |
 | POST | `/api/diaries/generate/:userId/:characterId` | 生成日记 |
-| GET | `/api/characters` | 角色列表 |
-| GET | `/api/export/:userId/:characterId` | 导出备份 |
+| GET | `/api/anniversaries/:userId/:characterId` | 纪念日列表 |
+| GET | `/api/export/:userId/:characterId` | 导出加密备份 |
 | POST | `/api/import` | 导入备份 |
-| GET/PUT | `/api/settings` | 配置管理 |
 
 ## 许可
 
