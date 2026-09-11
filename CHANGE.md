@@ -1,3 +1,8 @@
+## 2026-09-11 — 修复：秘密日记"生成今天"成功后列表不刷新
+
+### 核心变更点
+`public/index.html`：把 `openDiary` 中的日记列表拉取/渲染逻辑抽成 `loadDiaryList()`；`generateDiary()` 生成成功后自动调用刷新列表，新日记即时可见（无需重开弹窗）。
+
 ## 2026-09-11 — 新增 Live2D 模型 character（PSD2Live 流水线从设定表生成）
 
 ### 改动主题
@@ -610,3 +615,68 @@ Live2D 形象从单一 Haru 升级为按角色配置多模型：目录即清单�
 - moc3 中性姿态与 PSD 有非致命偏差警告（流水线 RigIntegrityValidator 非闸门级，视觉无影响）
 - PSD2Live headless 截图验证受限（无 GPU 合成器空白），渲染验证走 readPixels 顶点级替代
    - 追补（同日）：v2 首次部署后模型渲染成雪花噪声。根因是 `build-psd3.cjs` 写 PSD 时把 **PNG 压缩字节**直接塞进 ag-psd 的 `imageData.data`（该字段要求原始 RGBA 像素），导致图集纹理就是乱码；v1 的 build-psd2 是先 `.raw().toBuffer()` 再写入所以没踩坑。已修复为写入前重采样转 raw RGBA，重导出后经离屏渲染 PNG 目检通过。另将 SW 缓存版本 soul-v9 → **soul-v10**，强制所有客户端丢弃缓存的旧模型/旧纹理（静态资源是 cache-first，不 bump 的话旧雪花纹理会一直留在用户浏览器里）。
+
+## 2026-09-11 — Live2D character 模型 v2.1 视觉修复（护目镜眼 + 渲染验证管线）
+
+### 改动主题
+用户反馈 v2"效果很差"。对照 `docs/zh/PSD_LAYER_SPEC.md` 全规范逐部件高清渲染诊断，定位两大缺陷并修复：眼睛"白圈护目镜"感、中性嘴型白线观感。
+
+### 核心变更点
+1. **诊断结论**：09_EyeWhite 单眼宽/眼距比 0.684 > 10_Irides 完整眼 0.633，同按眼距缩放后眼白四周外露 ~1.5px；叠加 irisY 比 eyeY 高 3px，下缘白色月牙更厚，形成"护目镜"眼。嘴部件质量本身合格（张嘴唇齿正常），中性白线是 PSD2Live 嘴部 rig 闭合塌缩的固有表现。
+2. **眼部修复**（`build-psd3.cjs`）：眼白改跟随虹膜缩放（irS×0.97）并用虹膜中心做放置锚点，两层完全同心，眼白仅在眼球 XY 移动时兜底外露；`measure-eyes.cjs` 量化部件几何
+3. **渲染验证管线**（`render-check.html` + Playwright 截图）：headless 下 gl.readPixels / PIXI extract 读回像素均不可靠（默认帧缓冲半透明/暗色），改为 canvas 固定左上角 + 全页截图；URL 参数 `?mouth=` 控制嘴型验证开/闭状态。注意 PIXI 应用 backgroundColor 白底替代 backgroundAlpha 0
+4. **部署与缓存**：PSD2Live 重导出 → 部署 `public/live2d/models/character/`；SW 缓存 soul-v10 → **soul-v11**（静态资源 cache-first，不 bump 用户拿不到新 moc3/纹理——本次验证中再次踩实该坑）
+
+### 验证
+清缓存后 Playwright 实测：中性眼型自然（虹膜+贴合眼白，无外露白圈）；`mouth=0.6` 张嘴唇齿形态自然。对比修复前后截图确认。
+
+### 遗留事项
+- 前发部件自带白色高光丝（Seedream 生成的素材瑕疵），目前观感可接受为发丝高光；若需彻底去除要 img2img 重出部件
+- 眉毛/睫毛被长刘海遮挡（生成角色风格本身如此），中性嘴型为细唇线（rig 塌缩固有行为）
+
+## 2026-09-11 — 放弃并清理 PSD2Live 自动生成模型路线
+
+### 改动主题
+v2.2 修复"头组与卫衣重叠仅 18px 导致 idle 摆动时脖子切边从领口抬出"（头组整体下移 30px 加深重叠）+ 调换裤鞋层级（footwear 移到 bottomwear 之下）后，用户仍判定整体效果不达标，决定放弃"AI 生成分部件 → 切割组装 PSD → PSD2Live 自动绑定"路线并清理现场。
+
+### 核心变更点
+1. 删除已部署的废弃模型 `public/live2d/models/character/` 与临时验证页 `public/live2d/render-check.html`
+2. 删除工具链 `.scratch/psd2live/`
+3. 角色档案 `lin_004` 的 `live2d_model` 由 "character" 回退为 ""（默认 haru）
+4. SW 缓存 soul-v11 → **soul-v12**，强制客户端丢弃缓存的 character 模型文件
+
+### 遗留事项
+- 后续 Live2D 形象如需重启，建议方向：现成官方/商用模型、Live2D Cubism Editor 手工制作、或委托画师出分层 PSD；勿再回到本条已废弃的自动生成路线
+- `public/live2d/preview-test.html` 临时预览页仍保留，可按需删除
+
+## 2026-09-11 — 集成官方女性示例模型 Mao（虹色 Mao）
+
+### 改动主题
+放弃自动生成路线后，转向"现成官方模型"方向：调研社区开源女性 Live2D 模型（结论：真正 MIT/CC0 的 moc3 女性模型基本不存在，游戏拆包集合有版权风险），选定 Live2D 官方示例模型 **Mao**（女性魔法师少女形象，与项目已用 haru/hiyori 同属 Free Material License 体系）集成入库。
+
+### 核心变更点
+1. 从官方仓库 `Live2D/CubismWebSamples`（Samples/Resources/Mao）下载完整模型 22 个文件（4.2MB）至 `public/live2d/models/mao/`：moc3 + 贴图 + 物理 + Pose + cdi3 + 8 个表情 + 8 个动作
+2. 模型配置完备：Idle 动作组 ×2、TapBody 动作组 ×6、LipSync（ParamA）、EyeBlink、HitArea，与 avatar.js 嘴型同步/BroadcastChannel 管线天然兼容
+3. `/api/live2d/models` 目录即清单机制自动收录，零代码改动；角色编辑器形象下拉框可直接选 "mao"
+4. `public/live2d/preview-test.html` 硬编码的已删除 character 模型路径改为 `?model=` 查询参数（默认 haru），经 `/api/live2d/models` 解析实际 model3.json URL
+
+### 验证
+Playwright 打开 `preview-test.html?model=mao`，loadModel 成功，700×1400 全身截图渲染完好（女魔法师形象，无部件分离/破图）；API 已列出 mao 条目。
+
+### 遗留事项
+- Mao 许可为 Live2D Free Material License（学习/测试/个人可用，商用需按协议审查），与 haru/hiyori 同级
+- 若后续还需扩充形象，官方示例库还有 Hiyori（已入）、Natori、Mark、Rice、Wanko 等；女性向可选 Natori
+
+## 2026-09-11 — 设置弹窗新增 Live2D 形象显隐开关
+
+### 改动主题
+聊天区右下角的 Live2D 形象（`#avatarBox`）支持在设置中控制显示/隐藏。
+
+### 核心变更点
+1. 设置弹窗新增「界面偏好」区块：偏好卡片（渐变图标 + 标题「Live2D 形象」+ 描述文字 + iOS 风格拨动开关 `.pref-switch`），**拨动即生效**（change 事件即时落盘，无需点"保存并生效"——该按钮仍专责 API 配置）
+2. 持久化走 localStorage（key `avatarBox`，'0' 为隐藏），与 bgVideo 显隐偏好同一模式，不进服务端 settings.json（后者专责 API 配置）
+3. 隐藏实现为容器 `display:none`：avatar.js 的 ResizeObserver 察觉 canvas 尺寸为 0 自动置 paused 短路渲染循环，零 GPU 空转；页面加载时在 Avatar.mount 前先应用显隐，避免闪现
+4. 手机端（<900px）媒体查询本就隐藏形象，开关状态不影响该行为
+
+### 验证
+Playwright 实测：默认显示；取消勾选 → localStorage '0' + 容器 none；重新勾选恢复；设置弹窗打开时 checkbox 与当前状态同步；全程 0 console 错误。
