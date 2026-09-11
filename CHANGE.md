@@ -1,4 +1,20 @@
-## 2026-09-11 — 修复：语音通话"老收音机静电噪声"（输出格式应为 pcm_s16le）+ 两路音频叠加 + 字段名错误
+## 2026-09-11 — 修复：视频生成"未知错误"（漏 await + Ark API 路径错误）
+
+### 改动主题
+用户反馈视频生成失败提示"未知错误"。systematic-debugging 定位出两个叠加根因并修复，端到端验证视频成功生成（2.9MB mp4 落地 public/videos/ 并入库 photos 表）。
+
+### 根因
+1. **`createTask` 是 async 却没被 await**：路由同步调用导致 taskId 实为 Promise，`JSON.stringify(Promise)` 序列化成 `{}`，前端拿到 `[object Object]` 去轮询 → not_found → 兜底文案"未知错误"，把真实报错完全掩盖
+2. **Ark API 路径写错**：代码用 `/content_generation/tasks`，官方端点是 `/contents/generations/tasks`（复数 contents + generations），istio-envoy 直接空 404。手动 curl 验证正确路径返回 200 + cgt- 任务 ID
+
+### 核心变更点
+- `src/index.js`：`POST /api/video` 路由改 async，`await videoService.createTask(...)`
+- `src/services/VideoService.js`：`createTask` 加 await `_createArkTask`；`_createArkTask`/`_pollTask` 两处路径改为 `/contents/generations/tasks`；头注释同步
+
+### 验证
+POST /api/video 返回真实字符串 taskId（cgt-20260911231704-l2pg9）→ 约 80 秒后 status=succeeded → `test_user_lin_004_1789139917871.mp4`（2.9MB）保存成功。
+
+
 
 ### 改动主题
 用户反馈语音电话 AI 声音"像老式收音机，电流声很大，听不清"。第一轮修复（重叠/字段名）后用户复测仍有强噪声；第二轮用文本触发探针 + **过零率（ZCR）分析**定位到真正根因并修复。

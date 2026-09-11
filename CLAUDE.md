@@ -18,7 +18,7 @@ npm start            # 生产模式
 - 启动后访问 `http://localhost:3000`；HTTPS `https://localhost:3443`（自签证书自动生成，手机麦克风权限需要 HTTPS）。
 - 对话/绘图/TTS/视频的 API 配置通过 **Web 设置页**（`public/index.html` 设置弹窗 → `PUT /api/settings`）管理，持久化在 `data/settings.json`（唯一配置源，与 `.env` 无关，启动不做 env 校验，未配置仅告警不退出）。
 - `.env` 仅 `PORT` / `HTTPS_PORT` 仍生效。
-- 项目迭代记录见 [CHANGE.md](./CHANGE.md)（按日期追加需求与整改条目）（当前迭代：修复语音通话"老收音机静电噪声"——Seeduplex 输出格式须 `pcm_s16le`（裸 `pcm` 返回 32 位浮点，int16 解码即满幅噪声）+ 前端 `nextPlayTime` 单调调度防两路音频叠加；此前含 Live2D 形象按角色配置（haru/hiyori/mao/character）、PSD2Live 路线已废弃；`npm run desktop` 桌面模式 / `npm start` 网页模式；详见 CHANGE.md 2026-09-11 条目）。
+- 项目迭代记录见 [CHANGE.md](./CHANGE.md)（按日期追加需求与整改条目）（当前迭代：修复视频生成"未知错误"——路由漏 await 掩盖真实报错 + Ark 端点应为 `/contents/generations/tasks`；此前含语音通话噪声修复（Seeduplex 输出格式须 `pcm_s16le`）、Live2D 形象按角色配置（haru/hiyori/mao/character）、PSD2Live 路线已废弃；`npm run desktop` 桌面模式 / `npm start` 网页模式；详见 CHANGE.md 2026-09-11 条目）。
 
 ## 架构
 

@@ -574,13 +574,13 @@ app.get('/api/photos/:userId/:characterId', (req, res) => {
 });
 
 // --- Video（火山方舟，异步任务制） ---
-app.post('/api/video', (req, res) => {
+app.post('/api/video', async (req, res) => {
   const { userId, characterId, prompt } = req.body;
   if (!userId || !characterId) return res.status(400).json({ error: '缺少 userId 或 characterId' });
   if (!characterManager.hasCharacter(characterId)) return res.status(404).json({ error: `角色 ${characterId} 不存在` });
 
   try {
-    const { taskId, duration, truncated, cap } = videoService.createTask(userId, characterId, { prompt });
+    const { taskId, duration, truncated, cap } = await videoService.createTask(userId, characterId, { prompt });
     res.json({ success: true, taskId, duration, truncated, cap });
   } catch (err) {
     res.status(500).json({ error: `视频任务创建失败: ${err.message}` });

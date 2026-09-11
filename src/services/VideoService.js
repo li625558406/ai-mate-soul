@@ -11,8 +11,8 @@ const POLL_MAX_MS = 10 * 60 * 1000;
  * VideoService - 火山方舟（Ark）视频生成引擎
  *
  * 流程（异步任务制，视频生成耗时数分钟）：
- * 1. 创建任务 — POST /content_generation/tasks（文本 prompt + 角色参考图首帧）
- * 2. 后台轮询 — GET /content_generation/tasks/{id}（queued/running → succeeded/failed）
+ * 1. 创建任务 — POST /contents/generations/tasks（文本 prompt + 角色参考图首帧）
+ * 2. 后台轮询 — GET /contents/generations/tasks/{id}（queued/running → succeeded/failed）
  * 3. 下载保存 — mp4 存入 public/videos/
  * 4. 记录数据库 — 复用 photos 表（type = 'video'）
  *
@@ -65,9 +65,9 @@ export class VideoService {
    * @param {string} userId
    * @param {string} characterId
    * @param {object} opts - { prompt?: string, type?: string, caption?: string }
-   * @returns {{ taskId: string, duration: number, truncated: boolean, cap: number }}
+   * @returns {Promise<{ taskId: string, duration: number, truncated: boolean, cap: number }>}
    */
-  createTask(userId, characterId, opts = {}) {
+  async createTask(userId, characterId, opts = {}) {
     if (!this.isConfigured()) {
       throw new Error('视频 API 未配置，请在设置页面配置火山方舟 API Key');
     }
@@ -99,7 +99,7 @@ export class VideoService {
     }
     content.push({ type: 'text', text: `${prompt} --wm false --dur ${duration}` });
 
-    const taskId = this._createArkTask(content);
+    const taskId = await this._createArkTask(content);
     this._tasks.set(taskId, {
       status: 'generating',
       filename: null,
@@ -130,7 +130,7 @@ export class VideoService {
 
   /** 创建 Ark 任务 */
   async _createArkTask(content) {
-    const url = `${this._baseURL}/content_generation/tasks`;
+    const url = `${this._baseURL}/contents/generations/tasks`;
     const res = await fetch(url, {
       method: 'POST',
       headers: {
@@ -153,7 +153,7 @@ export class VideoService {
   async _pollTask(taskId) {
     const task = this._tasks.get(taskId);
     const deadline = Date.now() + POLL_MAX_MS;
-    const url = `${this._baseURL}/content_generation/tasks/${taskId}`;
+    const url = `${this._baseURL}/contents/generations/tasks/${taskId}`;
 
     while (Date.now() < deadline) {
       await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
