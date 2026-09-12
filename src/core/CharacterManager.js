@@ -352,4 +352,9 @@ export class CharacterManager {
   getAvatarPath(characterId) {
     return this._getImagePath(characterId, 'avatar');
   }
+
+  /** 获取视频专用参考图（生活化构图，供 VideoService 使用）路径 */
+  getVideoRefPath(characterId) {
+    return this._getImagePath(characterId, 'video_ref');
+  }
 }

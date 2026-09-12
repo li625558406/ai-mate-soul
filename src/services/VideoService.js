@@ -91,10 +91,17 @@ export class VideoService {
     const duration = Math.min(this._maxDuration, cap);
     const truncated = this._maxDuration > cap;
 
-    // 角色参考图：多模态参考模式（reference_image），仅约束外貌一致性，
-    // 不作为首帧——首帧模式会让视频从静态照片"复活"，镜头不自然
+    // 角色参考图：多模态参考模式（reference_image）。官方文档明确：多模态参考
+    // 会继承"角色形象、视觉风格、画面构图"，且无参数可关闭构图继承——参考图
+    // 若是白底半身照，模型大概率复刻该构图开场（拿静态照当首帧）。
+    // 解法：不与构图继承对抗，而是利用它——优先用角色目录下 video_ref.jpg
+    // （生活化实拍自拍构图，可用 Seedream 图生图从头像预生成），即使构图被
+    // 复刻开场，画面也是自然场景照；回退头像，再回退 reference 图。
     const content = [];
-    const refImagePath = this._characterManager.getReferenceImagePath(characterId);
+    content.push({ type: 'text', text: `${prompt} --wm false --dur ${duration}` });
+    const refImagePath = this._characterManager.getVideoRefPath(characterId)
+      || this._characterManager.getAvatarPath(characterId)
+      || this._characterManager.getReferenceImagePath(characterId);
     if (refImagePath && fs.existsSync(refImagePath)) {
       const base64 = fs.readFileSync(refImagePath).toString('base64');
       const ext = path.extname(refImagePath).toLowerCase();
@@ -105,7 +112,6 @@ export class VideoService {
       });
       console.log(`[VideoService] 使用角色参考图（多模态参考）: ${path.basename(refImagePath)}`);
     }
-    content.push({ type: 'text', text: `${prompt} --wm false --dur ${duration}` });
 
     const taskId = await this._createArkTask(content);
     this._tasks.set(taskId, {
@@ -139,13 +145,14 @@ export class VideoService {
   /** 创建 Ark 任务 */
   async _createArkTask(content) {
     const url = `${this._baseURL}/contents/generations/tasks`;
+    const body = JSON.stringify({ model: this._model, content });
     const res = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${this._apiKey}`,
       },
-      body: JSON.stringify({ model: this._model, content }),
+      body,
     });
 
     if (!res.ok) {
@@ -240,15 +247,9 @@ export class VideoService {
     return filename;
   }
 
-  /** 默认视频 prompt：角色档案 + 生活化动态镜头 */
+  /** 默认视频 prompt：显式引用图片1（角色参考图）+ 生活化动态镜头，开场必须是动态画面 */
   _buildDefaultPrompt(character) {
-    const visual = character.visual_features || {};
-    const parts = [];
-    if (visual.hair) parts.push(visual.hair);
-    if (visual.style) parts.push(visual.style);
-    const appearance = parts.join(', ') || character.full_name;
-
-    return `Live-action selfie video, handheld camera, ${appearance}, the girl looks at the camera, smiles and waves, natural daily indoor lighting, gentle body movement, realistic skin texture, warm atmosphere, smooth motion`;
+    return `实拍自拍视角，手持镜头轻微晃动，低角度仰拍：她刚把手机举起来，笑着对镜头挥手打招呼，随后歪头看镜头，拨一下头发，自然日常室内光线，真实皮肤质感，画面平滑流畅，中段她端详镜头时人物形象与图片1中的女生一致，全程不得展示图片1原图画面`;
   }
 
   /**
@@ -273,7 +274,7 @@ export class VideoService {
 
     try {
       const response = await this._llmProvider.chat(this._provider, {
-        systemPrompt: `你是一个视频内容生成器。根据下面角色与用户的最近聊天内容，生成两样东西：\n1. PROMPT：贴合当前对话场景的实拍自拍视频镜头描述（英文，一行，不超过 80 词）。主角是该女生本人（外貌以参考图为准，不要详细描述外貌）；场景、动作、表情、情绪要自然延续最近的对话内容（比如刚聊到做饭就拍厨房场景，用户难过就给安慰的镜头）；生活化真实感，手持镜头，自然光。\n2. CAPTION：随视频发给用户的中文配文，用角色的口吻说话，口语化、贴合对话内容，不超过 20 字，不要引号。\n\n严格按以下格式输出（共两行，不要多余内容）：\nPROMPT: <镜头描述>\nCAPTION: <中文配文>`,
+        systemPrompt: `你是一个视频内容生成器。根据下面角色与用户的最近聊天内容，生成两样东西：\n1. PROMPT：贴合当前对话场景的实拍自拍视频镜头描述（中文，一行，不超过 120 字）。必须遵守：\n- 开头直接描述开场动态镜头：人物正在做的具体动作 + 所处场景，机位用侧面、低角度、过肩等非正面静态构图（严禁正面半身照式开场）\n- 场景、动作、表情、情绪要自然延续最近的对话内容（比如刚聊到做饭就拍厨房场景，用户难过就给安慰的镜头）\n- 生活化真实感，手持镜头，自然光\n- 末尾固定加上："中段她<同一场景内的具体动作>时人物形象与图片1中的女生一致，全程不得展示图片1原图画面"（中段动作必须发生在开场同一场景内，不得引入场景切换或地点变化；图片1只能作为中段形象锚点，严禁写成"首帧/主角为图片1"——那会让模型拿参考图开场）\n2. CAPTION：随视频发给用户的中文配文，用角色的口吻说话，口语化、贴合对话内容，不超过 20 字，不要引号。\n\n严格按以下格式输出（共两行，不要多余内容）：\nPROMPT: <镜头描述>\nCAPTION: <中文配文>`,
         messages: [{ role: 'user', content: `角色：${character.full_name}（${character.personality || ''}）\n\n最近对话：\n${dialogue}` }],
         temperature: 0.7,
         maxTokens: 250,
