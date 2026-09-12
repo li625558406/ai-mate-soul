@@ -1,3 +1,21 @@
+## 2026-09-12 — 修复：视频生成成功后刷新页面消息消失（未持久化到聊天记录）
+
+### 改动主题
+用户反馈视频生成后刷新页面，对话中的视频气泡消失。根因：照片/语音均有"写 chat_history + 前端历史恢复"双链路，视频只存了 photos 表（相册）和前端 DOM，聊天记录里没有 video 角色。
+
+### 根因
+1. `chat_history.role` CHECK 约束仅含 user/assistant/system/photo/voice，无 'video'，直接写入会报约束错误
+2. `VideoService` 成功后未调用 `saveChatMessage`
+3. 前端 `loadChatHistory` 不处理 video 角色消息
+
+### 核心变更点
+- `src/database/DatabaseManager.js`：建表约束与迁移加 'video'（复用 photo/voice 迁移模式，重建表保留存量列）；`getFullChatHistory` 查询角色列表加 'video'（`getRecentChatHistory` 保持不变，视频 JSON 不注入 LLM 上下文）
+- `src/services/VideoService.js`：成功路径 `saveChatMessage({ role: 'video', content: JSON.stringify({ f: filename, c: caption }) })`，与 photo 模式一致
+- `public/index.html`：`loadChatHistory` 增加 video 分支，恢复视频气泡（含配文与 `<video>` 播放器）
+
+### 验证
+端到端：生成视频 succeeded 后 `/api/chat-history` 返回 role='video' 消息；浏览器切换用户/角色重新加载历史，视频气泡正常恢复（配文"我背完啦，现在能去运河边散步不？"，src 指向真实 mp4）。
+
 ## 2026-09-12 — 优化：视频配文（caption）接入场景化生成
 
 ### 改动主题

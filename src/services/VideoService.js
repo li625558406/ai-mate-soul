@@ -202,6 +202,13 @@ export class VideoService {
             type: 'video',
             caption: task.caption,
           });
+          // 持久化到聊天记录（role='video'），刷新页面后可恢复
+          this._db.saveChatMessage({
+            userId: task.userId,
+            characterId: task.characterId,
+            role: 'video',
+            content: JSON.stringify({ f: task.filename, c: task.caption }),
+          });
           console.log(`[VideoService] 任务 ${taskId} 完成: ${task.filename}`);
         } catch (err) {
           task.status = 'failed';

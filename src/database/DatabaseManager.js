@@ -50,7 +50,7 @@ export class DatabaseManager {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id TEXT NOT NULL,
         character_id TEXT NOT NULL,
-        role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system', 'photo', 'voice')),
+        role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system', 'photo', 'voice', 'video')),
         content TEXT NOT NULL,
         emotion_weight REAL DEFAULT 0,
         affection_after REAL DEFAULT 0,
@@ -245,6 +245,36 @@ export class DatabaseManager {
       }
     } catch (e) {
       console.log('[DatabaseManager] chat_history voice 迁移跳过:', e.message);
+    }
+
+    // Migration: rebuild chat_history to add 'video' to role CHECK constraint（新表需带上存量 is_proactive/read_at 列）
+    try {
+      const sqlVideo = this.db.prepare(
+        `SELECT sql FROM sqlite_master WHERE type='table' AND name='chat_history'`
+      ).get();
+      if (sqlVideo && !sqlVideo.sql.includes("'video'")) {
+        this.db.exec(
+          "CREATE TABLE IF NOT EXISTS chat_history_new (" +
+          "id INTEGER PRIMARY KEY AUTOINCREMENT," +
+          "user_id TEXT NOT NULL," +
+          "character_id TEXT NOT NULL," +
+          "role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system', 'photo', 'voice', 'video'))," +
+          "content TEXT NOT NULL," +
+          "emotion_weight REAL DEFAULT 0," +
+          "affection_after REAL DEFAULT 0," +
+          "created_at TEXT DEFAULT (datetime('now', 'localtime'))," +
+          "is_proactive INTEGER DEFAULT 0," +
+          "read_at TEXT DEFAULT NULL" +
+          ");" +
+          "INSERT OR IGNORE INTO chat_history_new SELECT * FROM chat_history;" +
+          "DROP TABLE chat_history;" +
+          "ALTER TABLE chat_history_new RENAME TO chat_history;" +
+          "CREATE INDEX IF NOT EXISTS idx_chat_history_lookup ON chat_history(user_id, character_id, created_at);"
+        );
+        console.log('[DatabaseManager] 迁移完成: chat_history role 约束已加入 video');
+      }
+    } catch (e) {
+      console.log('[DatabaseManager] chat_history video 迁移跳过:', e.message);
     }
 
     // Migration: add busy state fields to characters_state
@@ -502,7 +532,7 @@ export class DatabaseManager {
   getFullChatHistory(userId, characterId, limit = 50) {
     return this.db.prepare(
       `SELECT role, content, created_at FROM chat_history
-       WHERE user_id = ? AND character_id = ? AND role IN ('user', 'assistant', 'photo', 'voice')
+       WHERE user_id = ? AND character_id = ? AND role IN ('user', 'assistant', 'photo', 'voice', 'video')
        ORDER BY created_at DESC LIMIT ?`
     ).all(userId, characterId, limit).reverse();
   }

@@ -1071,6 +1071,11 @@ async function loadChatHistory(uid, characterId) {
           const v = JSON.parse(msg.content);
           div = appendMsg('voice', v.f, String(v.d || 1), msgTime);
         } catch { div = appendMsg(msg.role, msg.content, null, msgTime); }
+      } else if (msg.role === 'video') {
+        try {
+          const v = JSON.parse(msg.content);
+          div = appendMsg('video', v.f, `🎬 ${v.c || '视频'}`, msgTime);
+        } catch { div = appendMsg(msg.role, msg.content, null, msgTime); }
       } else {
         // assistant 多条消息按换行拆成独立气泡
         const lines = String(msg.content || '').split('\n').map(s => s.trim()).filter(Boolean);
