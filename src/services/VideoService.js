@@ -77,9 +77,14 @@ export class VideoService {
     const character = this._characterManager.getCharacter(characterId);
     if (!character) throw new Error(`角色 ${characterId} 不存在`);
 
-    // prompt：外部指定优先，否则结合最近对话上下文生成专属当下场景的镜头描述
-    const prompt = opts.prompt || await this._buildScenePrompt(userId, character);
-    const caption = opts.caption || this._generateCaption(character);
+    // prompt/caption：外部指定优先，否则结合最近对话上下文生成专属当下场景的镜头描述与配文
+    let prompt = opts.prompt;
+    let caption = opts.caption;
+    if (!prompt || !caption) {
+      const scene = await this._buildSceneContent(userId, character);
+      prompt = prompt || scene.prompt;
+      caption = caption || scene.caption;
+    }
 
     // 时长：配置值超出当前模型上限时按上限截断
     const cap = this._durationCap();
@@ -240,10 +245,11 @@ export class VideoService {
   }
 
   /**
-   * 场景化视频 prompt：解析最近对话上下文，生成贴合当下聊天场景的镜头描述。
-   * 无历史 / LLM 失败时回退默认 prompt（不阻塞视频生成）。
+   * 场景化内容：解析最近对话上下文，一次性生成贴合当下聊天场景的
+   * 视频镜头描述（prompt）+ 角色口吻配文（caption）。
+   * 无历史 / LLM 失败 / 解析失败时逐项回退默认值（不阻塞视频生成）。
    */
-  async _buildScenePrompt(userId, character) {
+  async _buildSceneContent(userId, character) {
     let history = [];
     try {
       history = this._db.getRecentChatHistory(userId, character.id, 10) || [];
@@ -251,7 +257,7 @@ export class VideoService {
       // 历史读取失败不影响生成
     }
     if (!history.length || !this._llmProvider) {
-      return this._buildDefaultPrompt(character);
+      return { prompt: this._buildDefaultPrompt(character), caption: this._generateCaption(character) };
     }
 
     const dialogue = history
@@ -260,18 +266,23 @@ export class VideoService {
 
     try {
       const response = await this._llmProvider.chat(this._provider, {
-        systemPrompt: `你是一个视频镜头描述生成器。根据下面角色与用户的最近聊天内容，生成一段贴合当前对话场景的实拍自拍视频镜头描述（英文，一行，不超过 80 词）。\n要求：\n- 视频主角是该女生本人（外貌以参考图为准，不要详细描述外貌）\n- 场景、动作、表情、情绪要自然延续最近的对话内容（比如刚聊到做饭就拍厨房场景，用户难过就给安慰的镜头）\n- 生活化真实感：Live-action selfie video 风格，手持镜头，自然光\n- 只输出镜头描述本身，不要任何解释、引号或前缀`,
+        systemPrompt: `你是一个视频内容生成器。根据下面角色与用户的最近聊天内容，生成两样东西：\n1. PROMPT：贴合当前对话场景的实拍自拍视频镜头描述（英文，一行，不超过 80 词）。主角是该女生本人（外貌以参考图为准，不要详细描述外貌）；场景、动作、表情、情绪要自然延续最近的对话内容（比如刚聊到做饭就拍厨房场景，用户难过就给安慰的镜头）；生活化真实感，手持镜头，自然光。\n2. CAPTION：随视频发给用户的中文配文，用角色的口吻说话，口语化、贴合对话内容，不超过 20 字，不要引号。\n\n严格按以下格式输出（共两行，不要多余内容）：\nPROMPT: <镜头描述>\nCAPTION: <中文配文>`,
         messages: [{ role: 'user', content: `角色：${character.full_name}（${character.personality || ''}）\n\n最近对话：\n${dialogue}` }],
         temperature: 0.7,
-        maxTokens: 200,
+        maxTokens: 250,
       });
-      const prompt = this._stripTags(response).replace(/^["'`]|["'`]$/g, '').trim();
-      if (!prompt) return this._buildDefaultPrompt(character);
-      console.log(`[VideoService] 场景化 prompt（基于最近 ${history.length} 条对话）: ${prompt.slice(0, 80)}...`);
-      return prompt;
+      const text = this._stripTags(response);
+      const prompt = text.match(/PROMPT:\s*(.+)/i)?.[1]?.replace(/^["'`]|["'`]$/g, '').trim();
+      const caption = text.match(/CAPTION:\s*(.+)/i)?.[1]?.replace(/^["'`]|["'`]$/g, '').trim();
+      if (!prompt) throw new Error(`响应缺少 PROMPT 行: ${text.slice(0, 100)}`);
+      console.log(`[VideoService] 场景化内容（基于最近 ${history.length} 条对话）: prompt="${prompt.slice(0, 60)}..." caption="${caption || ''}"`);
+      return {
+        prompt,
+        caption: caption || this._generateCaption(character),
+      };
     } catch (err) {
-      console.warn(`[VideoService] 场景化 prompt 生成失败，回退默认: ${err.message}`);
-      return this._buildDefaultPrompt(character);
+      console.warn(`[VideoService] 场景化内容生成失败，回退默认: ${err.message}`);
+      return { prompt: this._buildDefaultPrompt(character), caption: this._generateCaption(character) };
     }
   }
 

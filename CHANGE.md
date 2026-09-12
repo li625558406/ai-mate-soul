@@ -1,3 +1,14 @@
+## 2026-09-12 — 优化：视频配文（caption）接入场景化生成
+
+### 改动主题
+上轮遗留：视频配文仍是随机模板。本轮把 caption 纳入场景化生成，与 prompt 共用一次 LLM 调用产出，视频内容和配文指向同一场景。
+
+### 核心变更点
+`src/services/VideoService.js`：`_buildScenePrompt` 升级为 `_buildSceneContent`——单次 LLM 调用按 `PROMPT:` / `CAPTION:` 两行格式同时输出镜头描述与角色口吻中文配文（≤20 字），正则解析逐项校验；PROMPT 缺失视为失败整体回退，CAPTION 缺失仅配文回退随机模板。`createTask` 外部指定 prompt/caption 仍优先，二者任一缺失才触发 LLM。
+
+### 验证
+smoke_voice/lin_004 创建任务：caption="我在运河边等你哦"，prompt="A girl stands by the canal at dusk, holding a small succulent..."——配文与镜头同一场景，约 80 秒 succeeded。
+
 ## 2026-09-11 — 优化：视频参考图改为多模态参考 + 场景化 prompt（结合对话上下文）
 
 ### 改动主题
